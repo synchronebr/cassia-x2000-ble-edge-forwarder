@@ -7,7 +7,7 @@ Python não compila. O passo de build é gerar o **tar.gz**.
 Na raiz do projeto (onde existe a pasta `bletest.1.0/`):
 
 ```bash
-tar -zcvf bletest.1.3.tar.gz bletest.1.3/
+tar -zcvf sync_reading.1.3.tar.gz sync_reading.1.3/
 ```
 
 ### 3) "Ver logs" (dentro do servidor Cássia)

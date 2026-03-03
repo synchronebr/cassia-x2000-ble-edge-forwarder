@@ -16,7 +16,12 @@ LOCKDIR="$RUNDIR/$APP.lockdir"
 
 mkdir -p "$LOGDIR" "$RUNDIR" "$SPOOLDIR"
 
-log() { echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] $*" >> "$LOG"; }
+log() {
+  # Loga no arquivo e também em stderr (ajuda a debugar no console)
+  line="[$(date '+%Y-%m-%dT%H:%M:%S%z')] $*"
+  echo "$line" >> "$LOG"
+  echo "$line" >&2
+}
 
 rotate_log() {
   MAX=5242880
@@ -39,17 +44,41 @@ cleanup() {
     PID="$(cat "$PIDFILE" 2>/dev/null || true)"
     if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
       kill "$PID" 2>/dev/null || true
-      sleep 2
-      kill -9 "$PID" 2>/dev/null || true
+      # aguarda encerramento gracioso
+      t=0
+      while [ $t -lt 5 ]; do
+        kill -0 "$PID" 2>/dev/null || break
+        sleep 1
+        t=$((t+1))
+      done
+      # força se ainda estiver vivo
+      kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null || true
     fi
   fi
+  rm -f "$PIDFILE" 2>/dev/null || true
   rmdir "$LOCKDIR" 2>/dev/null || true
   exit 0
 }
 trap cleanup INT TERM
 
-# lock (evita múltiplas instâncias)
-mkdir "$LOCKDIR" 2>/dev/null || { rotate_log; log "already running; exiting"; exit 0; }
+# lock (evita múltiplas instâncias) + trata lock "stale"
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+  rotate_log
+
+  OLD_PID=""
+  [ -f "$PIDFILE" ] && OLD_PID="$(cat "$PIDFILE" 2>/dev/null || true)"
+
+  if [ -n "${OLD_PID:-}" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    log "already running (pid=$OLD_PID); exiting"
+    exit 0
+  fi
+
+  log "stale lock detected; clearing"
+  rm -f "$PIDFILE" 2>/dev/null || true
+  rmdir "$LOCKDIR" 2>/dev/null || true
+
+  mkdir "$LOCKDIR" 2>/dev/null || { log "cannot acquire lock; exiting"; exit 1; }
+fi
 
 # sanity checks
 [ -f "$BASE/app.py" ] || { rotate_log; log "missing $BASE/app.py"; exit 1; }
@@ -69,12 +98,13 @@ while true; do
   rotate_log
   log "starting python app (attempt=$attempt): $BASE/app.py"
 
-  # Recomendado: app loga em stdout (jsonl); aqui capturamos no arquivo
+  # app loga em stdout/stderr; aqui capturamos no arquivo (e também aparece no stderr via 'log' acima)
   python3 -u "$BASE/app.py" >> "$LOG" 2>&1 &
-  echo $! > "$PIDFILE"
+  CHILD_PID=$!
+  echo "$CHILD_PID" > "$PIDFILE"
   chmod 600 "$PIDFILE" 2>/dev/null || true
 
-  wait "$(cat "$PIDFILE")" || true
+  wait "$CHILD_PID" || true
   attempt=$((attempt+1))
   log "app exited; restarting in 3s"
   sleep 3
