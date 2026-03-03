@@ -6,8 +6,8 @@ from urllib.parse import urlparse
 
 def sse_lines(url: str, read_timeout: int = 60, should_stop=lambda: False) -> Iterator[str]:
     """
-    Lê SSE linha-a-linha (somente stdlib).
-    Não faz parsing de eventos; apenas devolve linhas já decodadas.
+    Lê SSE linha-a-linha (stdlib).
+    Retorna linhas já decodadas.
     """
     p = urlparse(url)
     host = p.hostname
@@ -28,7 +28,7 @@ def sse_lines(url: str, read_timeout: int = 60, should_stop=lambda: False) -> It
 
         resp = conn.getresponse()
         if resp.status != 200:
-            raise RuntimeError(f"SSE status {resp.status}")
+            raise RuntimeError("SSE status {}".format(resp.status))
 
         while True:
             if should_stop():

@@ -1,17 +1,20 @@
 import json
 import os
-from typing import Any, Dict, Iterable, Iterator, List
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 
-def append_jsonl(path: str, obj: Dict[str, Any]) -> None:
+def append_jsonl(path, obj):
+    # type: (str, Dict[str, Any]) -> None
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
-def append_many(path: str, items: Iterable[Dict[str, Any]]) -> None:
+def append_many(path, items):
+    # type: (str, Iterable[Dict[str, Any]]) -> None
     with open(path, "a", encoding="utf-8") as f:
         for it in items:
             f.write(json.dumps(it, ensure_ascii=False) + "\n")
 
-def iter_jsonl(path: str) -> Iterator[Dict[str, Any]]:
+def iter_jsonl(path):
+    # type: (str) -> Iterator[Dict[str, Any]]
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -22,13 +25,15 @@ def iter_jsonl(path: str) -> Iterator[Dict[str, Any]]:
             except Exception:
                 continue
 
-def spool_size_bytes(path: str) -> int:
+def spool_size_bytes(path):
+    # type: (str) -> int
     try:
         return os.path.getsize(path)
     except Exception:
         return 0
 
-def claim_spool(pending_path: str, sending_path: str) -> str | None:
+def claim_spool(pending_path, sending_path):
+    # type: (str, str) -> Optional[str]
     if not os.path.exists(pending_path):
         return None
     try:
@@ -38,30 +43,31 @@ def claim_spool(pending_path: str, sending_path: str) -> str | None:
         return None
 
 def flush_spool_streaming(
-    pending_path: str,
-    sending_path: str,
-    batch_url: str,
+    pending_path,
+    sending_path,
+    batch_url,
     post_batch_fn,
-    api_key: str,
-    api_key_header: str,
-    timeout: int,
-    batch_size: int,
+    api_key,
+    api_key_header,
+    timeout,
+    batch_size,
     sent_at_iso_fn,
-    spool_max_bytes: int,
+    spool_max_bytes,
     jlog_fn,
-    service_name: str,
-) -> int:
+    service_name,
+):
+    # type: (str, str, str, any, str, str, int, int, any, int, any, str) -> int
     """
-    - Renomeia pending -> sending (atômico)
-    - Envia em batches lendo streaming
-    - Se falhar, reempilha restante no pending (limitando pelo spool_max_bytes)
+    - pending -> sending (rename atômico)
+    - envia lendo streaming
+    - se falhar, reempilha o restante (com limite para proteger storage)
     """
     sending = claim_spool(pending_path, sending_path)
     if not sending:
         return 0
 
     sent_total = 0
-    batch: List[Dict[str, Any]] = []
+    batch = []  # type: List[Dict[str, Any]]
 
     try:
         for item in iter_jsonl(sending):
@@ -69,18 +75,18 @@ def flush_spool_streaming(
             if len(batch) >= batch_size:
                 post_batch_fn(batch_url, batch, sent_at_iso_fn(), api_key=api_key, api_key_header=api_key_header, timeout=timeout)
                 sent_total += len(batch)
-                batch.clear()
+                batch[:] = []
 
         if batch:
             post_batch_fn(batch_url, batch, sent_at_iso_fn(), api_key=api_key, api_key_header=api_key_header, timeout=timeout)
             sent_total += len(batch)
-            batch.clear()
+            batch[:] = []
 
         os.remove(sending)
         return sent_total
 
     except Exception as e:
-        remaining: List[Dict[str, Any]] = []
+        remaining = []  # type: List[Dict[str, Any]]
         if batch:
             remaining.extend(batch)
 
@@ -90,7 +96,6 @@ def flush_spool_streaming(
         except Exception:
             pass
 
-        # limita spool pra não matar o gateway
         if spool_max_bytes > 0 and spool_size_bytes(pending_path) >= spool_max_bytes:
             jlog_fn(service_name, "WARN", "spool_limit_reached",
                     "Spool atingiu limite; descartando eventos para proteger storage",

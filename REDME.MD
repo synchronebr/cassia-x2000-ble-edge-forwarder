@@ -18,4 +18,6 @@ Utilizar as credenciais:
 - Pass: cassia-XXXXXX (últimos códigos do mac adress "cassia-e59684")
 
 ```bash
-cat /opt/bletest/logs/app.log
+cat /opt/sync_reading/logs/app.log
+
+rm -f /opt/sync_reading/logs/app.log

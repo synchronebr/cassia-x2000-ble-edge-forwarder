@@ -8,11 +8,7 @@ from lib.log import jlog, utc_now_iso
 from lib.config import load_cfg, get_int, get_str
 from lib.http_client import post_batch
 from lib.sse import sse_lines, backoff_sleep
-from lib.spool import (
-    append_jsonl,
-    flush_spool_streaming,
-    spool_size_bytes,
-)
+from lib.spool import append_jsonl, flush_spool_streaming, spool_size_bytes
 
 APP_NAME = "sync_reading"
 SERVICE = "sync_reading"
@@ -71,7 +67,7 @@ def main():
     if not api_key:
         jlog(SERVICE, "WARN", "auth_missing", "api_key não definida no config; enviando sem autenticação (se backend permitir)")
 
-    # não logar api_key!
+    # Não logar api_key!
     jlog(SERVICE, "INFO", "boot", "Aplicação iniciando",
          base_dir=BASE_DIR, cfg_path=cfg_path, sse_url=sse_url,
          cloud_ingest_url=cloud_ingest_url, batch_size=batch_size,
@@ -84,7 +80,6 @@ def main():
     attempt = 0
 
     while not STOP:
-        # tenta reenviar spool
         resent = flush_spool_streaming(
             pending_path=EVENT_PENDING,
             sending_path=EVENT_SENDING,
@@ -138,7 +133,7 @@ def main():
                     try:
                         post_batch(cloud_ingest_url, batch, utc_now_iso(), api_key=api_key, api_key_header=api_key_header, timeout=timeout)
                         jlog(SERVICE, "INFO", "batch_sent", "Lote enviado com sucesso", batch_size=len(batch))
-                        batch.clear()
+                        batch[:] = []
                         last_flush = now
                     except Exception as e:
                         jlog(SERVICE, "WARN", "batch_send_failed", "Falha ao enviar lote; salvando no spool",
@@ -152,7 +147,7 @@ def main():
                             for item in batch:
                                 append_jsonl(EVENT_PENDING, item)
 
-                        batch.clear()
+                        batch[:] = []
                         last_flush = now
 
             if not STOP:
@@ -165,7 +160,6 @@ def main():
             jlog(SERVICE, "WARN", "sse_error", "SSE caiu/erro; reconectando", error=str(e), attempt=attempt)
             backoff_sleep(attempt, base=1.0, cap=30.0)
 
-    # shutdown: salva batch pendente
     if batch:
         jlog(SERVICE, "INFO", "shutdown_spooling", "Encerrando; salvando lote pendente no spool", batch_size=len(batch))
         if spool_max_bytes > 0 and spool_size_bytes(EVENT_PENDING) >= spool_max_bytes:
@@ -175,7 +169,7 @@ def main():
         else:
             for item in batch:
                 append_jsonl(EVENT_PENDING, item)
-        batch.clear()
+        batch[:] = []
 
     jlog(SERVICE, "INFO", "shutdown", "Aplicação finalizada")
 
