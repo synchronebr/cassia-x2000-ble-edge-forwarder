@@ -1,8 +1,18 @@
 {
   "gateway_api_base": "http://10.10.10.254",
   "sse_path": "/gatt/nodes?event=1",
+
   "cloud_url": "http://192.168.6.4:8080",
-  "bearer_token": "",
+  "cloud_ingest_path": "/sensors",
+  "cloud_spool_batch_path": "/logs/batch",
+
+  "api_key": "SUA_API_KEY_AQUI",
+  "api_key_header": "X-API-Key",
+
   "timeout_seconds": 10,
-  "print_every": 1
+  "batch_size": 50,
+  "flush_interval_seconds": 5,
+  "print_every": 50,
+
+  "spool_max_mb": 50
 }
