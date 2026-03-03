@@ -1,0 +1,8 @@
+{
+  "gateway_api_base": "http://10.10.10.254",
+  "sse_path": "/gatt/nodes?event=1",
+  "cloud_url": "http://192.168.6.4:8080",
+  "bearer_token": "",
+  "timeout_seconds": 10,
+  "print_every": 1
+}
