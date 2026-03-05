@@ -107,48 +107,94 @@ def main():
                 if not line or not line.startswith("data:"):
                     continue
 
+                if not line or not line.startswith("data:"):
+                    continue
+
                 data_str = line[len("data:"):].strip()
+
+                jlog(SERVICE, "INFO", "sse_raw_line", "Linha bruta recebida do SSE", raw_line=line)
+                jlog(SERVICE, "INFO", "sse_raw_data", "Payload bruto do SSE", raw_data=data_str)
+
                 try:
                     evt = json.loads(data_str)
                 except Exception as e:
-                    jlog(SERVICE, "WARN", "invalid_json", "Evento JSON inválido do SSE", error=str(e))
+                    jlog(
+                        SERVICE,
+                        "WARN",
+                        "invalid_json",
+                        "Evento JSON inválido do SSE",
+                        error=str(e),
+                        raw_line=line,
+                        raw_data=data_str
+                    )
                     continue
 
-                count += 1
-                event_obj = {
-                    "ts": int(time.time()),
-                    "source": "cassia-sse",
-                    "event": evt,
+                payload = {
+                    "receivedAt": utc_now_iso(),
+                    "ap": evt.get("ap"),
+                    "device": evt.get("device") or evt.get("id"),
+                    "handle": evt.get("handle"),
+                    "dataType": evt.get("dataType"),
+                    "value": evt.get("value"),
+                    "chipId": evt.get("chipId"),
+                    "event": evt,         # mantém o JSON original completo
+                    "sseLine": line,      # mantém a linha bruta também
+                    "sseData": data_str
                 }
-                batch.append(event_obj)
 
-                if print_every > 0 and (count % print_every == 0):
-                    mac = evt.get("device") or evt.get("mac") or ""
-                    jlog(SERVICE, "INFO", "event_progress", "Progresso de eventos", count=count, device_mac=mac)
+                try:
+                    post_batch(
+                        cloud_ingest_url,
+                        [payload],
+                        utc_now_iso(),
+                        api_key=api_key,
+                        api_key_header=api_key_header,
+                        timeout=timeout
+                    )
+                    jlog(SERVICE, "INFO", "notify_forwarded_raw", "Evento SSE bruto encaminhado")
+                except Exception as e:
+                    jlog(SERVICE, "WARN", "notify_forward_failed", "Falha ao encaminhar evento bruto", error=str(e))
+                # try:
+                #     evt = json.loads(data_str)
+                # except Exception as e:
+                #     jlog(SERVICE, "WARN", "invalid_json", "Evento JSON inválido do SSE", error=str(e))
+                #     continue
 
-                now = time.monotonic()
-                should_flush = (len(batch) >= batch_size) or ((now - last_flush) >= flush_interval)
+                # count += 1
+                # event_obj = {
+                #     "ts": int(time.time()),
+                #     "source": "cassia-sse",
+                #     "event": evt,
+                # }
+                # batch.append(event_obj)
 
-                if should_flush and batch:
-                    try:
-                        post_batch(cloud_ingest_url, batch, utc_now_iso(), api_key=api_key, api_key_header=api_key_header, timeout=timeout)
-                        jlog(SERVICE, "INFO", "batch_sent", "Lote enviado com sucesso", batch_size=len(batch))
-                        batch[:] = []
-                        last_flush = now
-                    except Exception as e:
-                        jlog(SERVICE, "WARN", "batch_send_failed", "Falha ao enviar lote; salvando no spool",
-                             error=str(e), batch_size=len(batch))
+                # if print_every > 0 and (count % print_every == 0):
+                #     mac = evt.get("device") or evt.get("mac") or ""
+                #     jlog(SERVICE, "INFO", "event_progress", "Progresso de eventos", count=count, device_mac=mac)
 
-                        if spool_max_bytes > 0 and spool_size_bytes(EVENT_PENDING) >= spool_max_bytes:
-                            jlog(SERVICE, "WARN", "spool_limit_reached",
-                                 "Spool atingiu limite; descartando lote para proteger storage",
-                                 spool_max_bytes=spool_max_bytes, dropped=len(batch))
-                        else:
-                            for item in batch:
-                                append_jsonl(EVENT_PENDING, item)
+                # now = time.monotonic()
+                # should_flush = (len(batch) >= batch_size) or ((now - last_flush) >= flush_interval)
 
-                        batch[:] = []
-                        last_flush = now
+                # if should_flush and batch:
+                #     try:
+                #         post_batch(cloud_ingest_url, batch, utc_now_iso(), api_key=api_key, api_key_header=api_key_header, timeout=timeout)
+                #         jlog(SERVICE, "INFO", "batch_sent", "Lote enviado com sucesso", batch_size=len(batch))
+                #         batch[:] = []
+                #         last_flush = now
+                #     except Exception as e:
+                #         jlog(SERVICE, "WARN", "batch_send_failed", "Falha ao enviar lote; salvando no spool",
+                #              error=str(e), batch_size=len(batch))
+
+                #         if spool_max_bytes > 0 and spool_size_bytes(EVENT_PENDING) >= spool_max_bytes:
+                #             jlog(SERVICE, "WARN", "spool_limit_reached",
+                #                  "Spool atingiu limite; descartando lote para proteger storage",
+                #                  spool_max_bytes=spool_max_bytes, dropped=len(batch))
+                #         else:
+                #             for item in batch:
+                #                 append_jsonl(EVENT_PENDING, item)
+
+                #         batch[:] = []
+                #         last_flush = now
 
             if not STOP:
                 raise RuntimeError("SSE stream encerrou")
