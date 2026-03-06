@@ -14,5 +14,8 @@
   "flush_interval_seconds": 5,
   "print_every": 50,
 
-  "spool_max_mb": 50
+  "spool_max_mb": 50,
+
+  "gap_rssi_path": "/gap/rssi",
+  "rssi_max_age_sec": 60
 }

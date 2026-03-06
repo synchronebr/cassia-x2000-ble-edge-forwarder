@@ -2,9 +2,11 @@ import json
 import os
 from typing import Any, Dict, Tuple, Optional
 
+
 def load_json(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def load_cfg(app_name: str, base_dir: str, env_cfg_path: Optional[str] = None) -> Tuple[Dict[str, Any], str]:
     """
@@ -26,9 +28,11 @@ def load_cfg(app_name: str, base_dir: str, env_cfg_path: Optional[str] = None) -
 
     raise FileNotFoundError("Nenhum config.json encontrado. Tentados: {}".format(candidates))
 
+
 def get_str(cfg: Dict[str, Any], key: str, default: str = "") -> str:
     v = cfg.get(key, default)
     return "" if v is None else str(v)
+
 
 def get_int(cfg: Dict[str, Any], key: str, default: int) -> int:
     try:

@@ -4,10 +4,10 @@ import time
 from typing import Iterator
 from urllib.parse import urlparse
 
+
 def sse_lines(url: str, read_timeout: int = 60, should_stop=lambda: False) -> Iterator[str]:
     """
-    Lê SSE linha-a-linha (stdlib).
-    Retorna linhas já decodadas.
+    Lê SSE linha-a-linha (stdlib). Retorna linhas decodadas (sem \r\n).
     """
     p = urlparse(url)
     host = p.hostname
@@ -37,11 +37,13 @@ def sse_lines(url: str, read_timeout: int = 60, should_stop=lambda: False) -> It
             if not line:
                 break
             yield line.decode("utf-8", errors="ignore").rstrip("\r\n")
+
     finally:
         try:
             conn.close()
         except Exception:
             pass
+
 
 def backoff_sleep(attempt: int, base: float = 1.0, cap: float = 30.0) -> None:
     t = min(cap, base * (2 ** attempt))
