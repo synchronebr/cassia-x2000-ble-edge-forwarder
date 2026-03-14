@@ -3,19 +3,15 @@
   "sse_path": "/gatt/nodes?event=1",
 
   "cloud_url": "http://192.168.6.4:8080",
-  "cloud_ingest_path": "/sensors",
-  "cloud_spool_batch_path": "/logs/batch",
+  "cloud_ingest_path": "/sensors/cassia",
 
   "api_key": "SUA_API_KEY_AQUI",
   "api_key_header": "X-API-Key",
 
-  "timeout_seconds": 10,
-  "batch_size": 50,
-  "flush_interval_seconds": 5,
-  "print_every": 50,
+  "timeout_seconds": 5,
+  "batch_size": 20,
+  "flush_interval_seconds": 1,
+  "print_every": 100,
 
-  "spool_max_mb": 50,
-
-  "gap_rssi_path": "/gap/rssi",
-  "rssi_max_age_sec": 60
+  "spool_max_mb": 20
 }

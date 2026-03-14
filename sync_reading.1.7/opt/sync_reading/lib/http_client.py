@@ -1,17 +1,42 @@
 import json
 import urllib.request
-from typing import Any, Dict, List, Tuple
+import urllib.error
 
-def post_json(url: str, payload: Dict[str, Any], api_key: str = "", api_key_header: str = "X-API-Key", timeout: int = 10) -> Tuple[int, bytes]:
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
+
+def post_json(url, payload, api_key="", api_key_header="X-API-Key", timeout=5):
+    body = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+
     if api_key:
         headers[api_key_header] = api_key
 
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status, resp.read()
+    req = urllib.request.Request(
+        url=url,
+        data=body,
+        headers=headers,
+        method="POST",
+    )
 
-def post_batch(url: str, items: List[Dict[str, Any]], sent_at_iso: str, api_key: str = "", api_key_header: str = "X-API-Key", timeout: int = 10) -> Tuple[int, bytes]:
-    payload = {"sentAt": sent_at_iso, "items": items}
-    return post_json(url, payload, api_key=api_key, api_key_header=api_key_header, timeout=timeout)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
+            if status < 200 or status >= 300:
+                raise RuntimeError("HTTP status inválido: %s" % status)
+    except urllib.error.HTTPError as e:
+        response_body = ""
+        try:
+            response_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise RuntimeError("HTTPError %s: %s" % (e.code, response_body))
+    except urllib.error.URLError as e:
+        raise RuntimeError("URLError: %s" % str(e))
+    except Exception as e:
+        raise RuntimeError("Erro no POST JSON: %s" % str(e))

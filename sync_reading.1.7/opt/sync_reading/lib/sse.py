@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import http.client
 import random
 import time
@@ -5,9 +6,14 @@ from typing import Iterator
 from urllib.parse import urlparse
 
 
-def sse_lines(url: str, read_timeout: int = 60, should_stop=lambda: False) -> Iterator[str]:
+def sse_events(url: str, read_timeout: int = 60, should_stop=lambda: False) -> Iterator[str]:
     """
-    Lê SSE linha-a-linha (stdlib). Retorna linhas decodadas (sem \r\n).
+    Lê SSE por evento completo.
+
+    Acumula múltiplas linhas 'data:' até encontrar uma linha vazia,
+    conforme o framing padrão do SSE.
+
+    Retorna apenas o conteúdo concatenado do campo data.
     """
     p = urlparse(url)
     host = p.hostname
@@ -30,13 +36,34 @@ def sse_lines(url: str, read_timeout: int = 60, should_stop=lambda: False) -> It
         if resp.status != 200:
             raise RuntimeError("SSE status {}".format(resp.status))
 
+        data_parts = []
+
         while True:
             if should_stop():
                 break
+
             line = resp.readline()
             if not line:
+                # conexão fechou
                 break
-            yield line.decode("utf-8", errors="ignore").rstrip("\r\n")
+
+            line = line.decode("utf-8", errors="ignore").rstrip("\r\n")
+
+            # fim de um evento SSE
+            if line == "":
+                if data_parts:
+                    yield "\n".join(data_parts)
+                    data_parts = []
+                continue
+
+            if line.startswith("data:"):
+                data_parts.append(line[len("data:"):].lstrip())
+
+            # ignoramos outros campos SSE como event:, id:, retry:, etc.
+
+        # flush final, se a conexão fechar sem linha em branco
+        if data_parts:
+            yield "\n".join(data_parts)
 
     finally:
         try:

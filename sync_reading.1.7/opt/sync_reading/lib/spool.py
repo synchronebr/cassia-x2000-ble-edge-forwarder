@@ -2,14 +2,17 @@ import json
 import os
 from typing import Any, Dict, Iterable, Iterator, List
 
+
 def append_jsonl(path: str, obj: Dict[str, Any]) -> None:
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
 
 def append_many(path: str, items: Iterable[Dict[str, Any]]) -> None:
     with open(path, "a", encoding="utf-8") as f:
         for it in items:
             f.write(json.dumps(it, ensure_ascii=False) + "\n")
+
 
 def iter_jsonl(path: str) -> Iterator[Dict[str, Any]]:
     with open(path, "r", encoding="utf-8") as f:
@@ -22,11 +25,13 @@ def iter_jsonl(path: str) -> Iterator[Dict[str, Any]]:
             except Exception:
                 continue
 
+
 def spool_size_bytes(path: str) -> int:
     try:
         return os.path.getsize(path)
     except Exception:
         return 0
+
 
 def claim_spool(pending_path: str, sending_path: str):
     if not os.path.exists(pending_path):
@@ -37,16 +42,16 @@ def claim_spool(pending_path: str, sending_path: str):
     except Exception:
         return None
 
+
 def flush_spool_streaming(
     pending_path: str,
     sending_path: str,
     batch_url: str,
-    post_batch_fn,
+    post_json_fn,
     api_key: str,
     api_key_header: str,
     timeout: int,
     batch_size: int,
-    sent_at_iso_fn,
     spool_max_bytes: int,
     jlog_fn,
     service_name: str,
@@ -55,32 +60,54 @@ def flush_spool_streaming(
     - pending -> sending (rename atômico)
     - envia lendo streaming
     - se falhar, reempilha o restante (com limite para proteger storage)
+    - se houver 1 item, envia objeto único
+    - se houver N itens, envia lista pura
     """
     sending = claim_spool(pending_path, sending_path)
     if not sending:
         return 0
 
     sent_total = 0
-    batch = []  # type: List[Dict[str, Any]]
+    batch: List[Dict[str, Any]] = []
 
     try:
         for item in iter_jsonl(sending):
             batch.append(item)
+
             if len(batch) >= batch_size:
-                post_batch_fn(batch_url, batch, sent_at_iso_fn(), api_key=api_key, api_key_header=api_key_header, timeout=timeout)
+                payload = batch[0] if len(batch) == 1 else list(batch)
+
+                post_json_fn(
+                    url=batch_url,
+                    payload=payload,
+                    api_key=api_key,
+                    api_key_header=api_key_header,
+                    timeout=timeout,
+                )
+
                 sent_total += len(batch)
-                batch[:] = []
+                batch.clear()
 
         if batch:
-            post_batch_fn(batch_url, batch, sent_at_iso_fn(), api_key=api_key, api_key_header=api_key_header, timeout=timeout)
+            payload = batch[0] if len(batch) == 1 else list(batch)
+
+            post_json_fn(
+                url=batch_url,
+                payload=payload,
+                api_key=api_key,
+                api_key_header=api_key_header,
+                timeout=timeout,
+            )
+
             sent_total += len(batch)
-            batch[:] = []
+            batch.clear()
 
         os.remove(sending)
         return sent_total
 
     except Exception as e:
-        remaining = []  # type: List[Dict[str, Any]]
+        remaining: List[Dict[str, Any]] = []
+
         if batch:
             remaining.extend(batch)
 
@@ -91,9 +118,14 @@ def flush_spool_streaming(
             pass
 
         if spool_max_bytes > 0 and spool_size_bytes(pending_path) >= spool_max_bytes:
-            jlog_fn(service_name, "WARN", "spool_limit_reached",
-                    "Spool atingiu limite; descartando eventos para proteger storage",
-                    spool_max_bytes=spool_max_bytes, dropped=len(remaining))
+            jlog_fn(
+                service_name,
+                "WARN",
+                "spool_limit_reached",
+                "Spool atingiu limite; descartando eventos para proteger storage",
+                spool_max_bytes=spool_max_bytes,
+                dropped=len(remaining),
+            )
             remaining = []
 
         if remaining:
@@ -104,6 +136,12 @@ def flush_spool_streaming(
         except Exception:
             pass
 
-        jlog_fn(service_name, "WARN", "spool_flush_failed", "Falha ao reenviar spool",
-                error=str(e), requeued=len(remaining))
+        jlog_fn(
+            service_name,
+            "WARN",
+            "spool_flush_failed",
+            "Falha ao reenviar spool",
+            error=str(e),
+            requeued=len(remaining),
+        )
         return 0
