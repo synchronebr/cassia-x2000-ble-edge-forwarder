@@ -43,105 +43,135 @@ def claim_spool(pending_path: str, sending_path: str):
         return None
 
 
-def flush_spool_streaming(
+def flush_spool_one_by_one(
     pending_path: str,
     sending_path: str,
-    batch_url: str,
+    target_url: str,
     post_json_fn,
     api_key: str,
     api_key_header: str,
     timeout: int,
-    batch_size: int,
     spool_max_bytes: int,
     jlog_fn,
     service_name: str,
 ) -> int:
     """
+    Fluxo:
     - pending -> sending (rename atômico)
-    - envia lendo streaming
-    - se falhar, reempilha o restante (com limite para proteger storage)
-    - se houver 1 item, envia objeto único
-    - se houver N itens, envia lista pura
+    - envia 1 item por vez para a API
+    - item enviado com sucesso é considerado concluído e não volta ao spool
+    - se falhar no meio, reempilha apenas:
+        * item atual que falhou
+        * itens restantes ainda não processados
     """
+
     sending = claim_spool(pending_path, sending_path)
     if not sending:
         return 0
 
     sent_total = 0
-    batch: List[Dict[str, Any]] = []
 
     try:
-        for item in iter_jsonl(sending):
-            batch.append(item)
+        with open(sending, "r", encoding="utf-8") as f:
+            while True:
+                line = f.readline()
+                if not line:
+                    break
 
-            if len(batch) >= batch_size:
-                payload = batch[0] if len(batch) == 1 else list(batch)
+                line = line.strip()
+                if not line:
+                    continue
 
-                post_json_fn(
-                    url=batch_url,
-                    payload=payload,
-                    api_key=api_key,
-                    api_key_header=api_key_header,
-                    timeout=timeout,
-                )
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    jlog_fn(
+                        service_name,
+                        "WARN",
+                        "spool_invalid_json_line",
+                        "Linha inválida no spool; descartando linha",
+                        raw_line_preview=line[:500],
+                    )
+                    continue
 
-                sent_total += len(batch)
-                batch.clear()
+                try:
+                    # ENVIO SEMPRE INDIVIDUAL
+                    post_json_fn(
+                        url=target_url,
+                        payload=item,
+                        api_key=api_key,
+                        api_key_header=api_key_header,
+                        timeout=timeout,
+                    )
+                    sent_total += 1
 
-        if batch:
-            payload = batch[0] if len(batch) == 1 else list(batch)
+                except Exception as e:
+                    remaining: List[Dict[str, Any]] = [item]
 
-            post_json_fn(
-                url=batch_url,
-                payload=payload,
-                api_key=api_key,
-                api_key_header=api_key_header,
-                timeout=timeout,
-            )
+                    # lê o restante ainda não processado e reempilha
+                    for rest_line in f:
+                        rest_line = rest_line.strip()
+                        if not rest_line:
+                            continue
+                        try:
+                            remaining.append(json.loads(rest_line))
+                        except Exception:
+                            continue
 
-            sent_total += len(batch)
-            batch.clear()
+                    if spool_max_bytes > 0 and spool_size_bytes(pending_path) >= spool_max_bytes:
+                        jlog_fn(
+                            service_name,
+                            "WARN",
+                            "spool_limit_reached",
+                            "Spool atingiu limite; descartando eventos para proteger storage",
+                            spool_max_bytes=spool_max_bytes,
+                            dropped=len(remaining),
+                        )
+                        remaining = []
 
-        os.remove(sending)
-        return sent_total
+                    if remaining:
+                        append_many(pending_path, remaining)
 
-    except Exception as e:
-        remaining: List[Dict[str, Any]] = []
+                    try:
+                        os.remove(sending)
+                    except Exception:
+                        pass
 
-        if batch:
-            remaining.extend(batch)
-
-        try:
-            for item in iter_jsonl(sending):
-                remaining.append(item)
-        except Exception:
-            pass
-
-        if spool_max_bytes > 0 and spool_size_bytes(pending_path) >= spool_max_bytes:
-            jlog_fn(
-                service_name,
-                "WARN",
-                "spool_limit_reached",
-                "Spool atingiu limite; descartando eventos para proteger storage",
-                spool_max_bytes=spool_max_bytes,
-                dropped=len(remaining),
-            )
-            remaining = []
-
-        if remaining:
-            append_many(pending_path, remaining)
+                    jlog_fn(
+                        service_name,
+                        "WARN",
+                        "spool_flush_failed",
+                        "Falha ao reenviar spool item a item",
+                        error=str(e),
+                        sent_before_failure=sent_total,
+                        requeued=len(remaining),
+                    )
+                    return sent_total
 
         try:
             os.remove(sending)
         except Exception:
             pass
 
+        return sent_total
+
+    except Exception as e:
         jlog_fn(
             service_name,
             "WARN",
-            "spool_flush_failed",
-            "Falha ao reenviar spool",
+            "spool_processing_error",
+            "Erro processando arquivo de spool",
             error=str(e),
-            requeued=len(remaining),
         )
-        return 0
+
+        try:
+            if os.path.exists(sending):
+                # fallback defensivo: devolve todo o arquivo para pending
+                remaining = list(iter_jsonl(sending))
+                if remaining:
+                    append_many(pending_path, remaining)
+                os.remove(sending)
+        except Exception:
+            pass
+
+        return sent_total

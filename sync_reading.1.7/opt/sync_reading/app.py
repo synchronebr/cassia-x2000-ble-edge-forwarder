@@ -10,7 +10,7 @@ from lib.log import jlog, utc_now_iso
 from lib.config import load_cfg, get_int, get_str
 from lib.http_client import post_json
 from lib.sse import sse_events, backoff_sleep
-from lib.spool import flush_spool_streaming
+from lib.spool import flush_spool_one_by_one
 
 from lib.ble_packet import parse_cassia_value
 from lib.assembly import assembler_loop
@@ -262,15 +262,14 @@ def sender_loop(
             stats.inc("spool_flush_calls", 1)
 
             with spool_lock:
-                sent = flush_spool_streaming(
+                sent = flush_spool_one_by_one(
                     pending_path=EVENT_PENDING,
                     sending_path=EVENT_SENDING,
-                    batch_url=cloud_ingest_url,
+                    target_url=cloud_ingest_url,
                     post_json_fn=post_json,
                     api_key=api_key,
                     api_key_header=api_key_header,
                     timeout=timeout,
-                    batch_size=sender_batch_size,
                     spool_max_bytes=spool_max_bytes,
                     jlog_fn=jlog,
                     service_name=SERVICE,
@@ -371,10 +370,10 @@ def main():
     if not cloud_url:
         raise RuntimeError("config: cloud_url é obrigatório")
 
-    cloud_ingest_url = cloud_url + get_str(cfg, "cloud_ingest_path", "/sensors")
+    cloud_ingest_url = cloud_url + get_str(cfg, "cloud_ingest_path", "/sensors/cassia")
 
     timeout = get_int(cfg, "timeout_seconds", 5)
-    sender_batch_size = get_int(cfg, "batch_size", 20)
+    sender_batch_size = 1
     flush_interval_seconds = get_int(cfg, "flush_interval_seconds", 1)
     metrics_interval_seconds = get_int(cfg, "metrics_interval_seconds", 5)
 
@@ -470,7 +469,7 @@ def main():
         cloud_ingest_url=cloud_ingest_url,
         api_key_header=api_key_header,
         timeout_seconds=timeout,
-        sender_batch_size=sender_batch_size,
+        sender_batch_size="one_by_one",
         flush_interval_seconds=flush_interval_seconds,
         spool_max_mb=spool_max_mb,
         packet_queue_max=packet_queue_max,
@@ -577,7 +576,6 @@ def main():
 
                 value = evt.get("value", "")
                 device = evt.get("device") or evt.get("id")
-                ap = evt.get("ap") or "unknown"
                 gateway_ap_mac = (
                     gateway_identity.get("apMac")
                     or gateway_identity.get("gatewayMac")
@@ -590,6 +588,7 @@ def main():
                     or evt.get("gateway")
                     or evt.get("apMac")
                     or gateway_ap_mac
+                    or "unknown"
                 )
 
                 stats.set_last_event_info(
@@ -640,7 +639,8 @@ def main():
                         queue_depth=packet_queue.qsize(),
                         device=device,
                         ap=ap,
-                        sensorId=parsed.get("sensor_id"),
+                        packetId=parsed.get("packet_id"),
+                        packetType=parsed.get("packet_type"),
                         packetNo=parsed.get("packet_no"),
                         totalPackets=parsed.get("total_packets"),
                     )
