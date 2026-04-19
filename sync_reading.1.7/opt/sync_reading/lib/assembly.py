@@ -385,6 +385,8 @@ def validate_control_frames(assembly):
 
 
 def build_success_event(assembly):
+    ts = try_parse_timestamp_payload(assembly.timestamp_payload)
+
     event = {
         "device": assembly.device,
         "ap": assembly.ap,
@@ -399,7 +401,10 @@ def build_success_event(assembly):
 
         "totalPackets": assembly.total_packets_expected_for_frame(),
         "receivedAt": iso_utc_from_epoch(assembly.last_packet_at or assembly.last_update_at),
-        "timestamp": try_parse_timestamp_payload(assembly.timestamp_payload),
+        "readingAt": iso_utc_from_epoch(
+            assembly.first_packet_at or assembly.started_at
+        ),
+        "timestamp": ts,
     }
 
     if BLE_TX_SENSOR_IIS3DWB in assembly.sensor_parts:

@@ -218,17 +218,15 @@ def outbound_spool_writer_loop(
             stats.inc("spool_written_events", len(batch))
             stats.inc("spool_batches_written", 1)
 
-            if progress_every > 0:
-                total = stats.snapshot()["spool_written_events"]
-                if total % progress_every == 0:
-                    jlog(
-                        SERVICE,
-                        "INFO",
-                        "spool_write_progress",
-                        "Eventos finais persistidos em spool",
-                        spool_written_events=total,
-                        last_batch_size=len(batch),
-                    )
+            if progress_every > 0 and stats.spool_written_events % progress_every == 0:
+                jlog(
+                    SERVICE,
+                    "INFO",
+                    "spool_write_progress",
+                    "Eventos finais persistidos em spool",
+                    spool_written_events=stats.spool_written_events,
+                    last_batch_size=len(batch),
+                )
 
             batch.clear()
             last_flush = now
@@ -283,7 +281,7 @@ def sender_loop(
                     "spool_flushed",
                     "Eventos finais enviados para /sensors",
                     sent=sent,
-                    sent_total=stats.snapshot()["sent_events"],
+                    sent_total=stats.sent_events,
                 )
 
         except Exception as e:
@@ -478,9 +476,9 @@ def main():
         max_open_assemblies=max_open_assemblies,
         spool_write_batch_size=spool_write_batch_size,
         spool_write_batch_wait_ms=spool_write_batch_wait_ms,
-        gateway_identity_loaded=stats.snapshot()["gateway_identity_loaded"],
-        gateway_mac=stats.snapshot()["gateway_mac"],
-        gateway_ap_mac=stats.snapshot()["gateway_ap_mac"],
+        gateway_identity_loaded=stats.gateway_identity_loaded,
+        gateway_mac=stats.gateway_mac,
+        gateway_ap_mac=stats.gateway_ap_mac,
     )
 
     assembler = threading.Thread(
@@ -622,7 +620,6 @@ def main():
                     "device": device,
                     "ap": ap,
                     "packet": parsed,
-                    "raw_event": evt,
                 }
 
                 try:
@@ -645,26 +642,25 @@ def main():
                         totalPackets=parsed.get("total_packets"),
                     )
 
-                if capture_progress_every > 0:
+                if capture_progress_every > 0 and stats.total_sse_events % capture_progress_every == 0:
                     snap = stats.snapshot()
-                    if snap["total_sse_events"] % capture_progress_every == 0:
-                        jlog(
-                            SERVICE,
-                            "INFO",
-                            "capture_progress",
-                            "Progresso de captura SSE",
-                            total_sse_events=snap["total_sse_events"],
-                            packet_enqueued=snap["packet_enqueued"],
-                            invalid_json_events=snap["invalid_json_events"],
-                            invalid_value_events=snap["invalid_value_events"],
-                            packet_queue_depth=packet_queue.qsize(),
-                            outbound_queue_depth=outbound_queue.qsize(),
-                            spool_written_events=snap["spool_written_events"],
-                            sent_events=snap["sent_events"],
-                            device=snap["last_device"],
-                            ap=snap["last_ap"],
-                            value_len=snap["last_value_len"],
-                        )
+                    jlog(
+                        SERVICE,
+                        "INFO",
+                        "capture_progress",
+                        "Progresso de captura SSE",
+                        total_sse_events=snap["total_sse_events"],
+                        packet_enqueued=snap["packet_enqueued"],
+                        invalid_json_events=snap["invalid_json_events"],
+                        invalid_value_events=snap["invalid_value_events"],
+                        packet_queue_depth=packet_queue.qsize(),
+                        outbound_queue_depth=outbound_queue.qsize(),
+                        spool_written_events=snap["spool_written_events"],
+                        sent_events=snap["sent_events"],
+                        device=snap["last_device"],
+                        ap=snap["last_ap"],
+                        value_len=snap["last_value_len"],
+                    )
 
             if not STOP:
                 raise RuntimeError("SSE GATT encerrou")

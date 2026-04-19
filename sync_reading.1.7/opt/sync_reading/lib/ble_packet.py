@@ -60,9 +60,9 @@ def parse_cassia_value(hex_str: str) -> Dict[str, Any]:
     """
     Protocolo BLE:
       byte 0   : packetId
-      bytes 1-2: packet_no (uint16 big-endian)
-      bytes 3-4: total_packets (uint16 big-endian)
-      bytes 5-6: total_bytes (uint16 big-endian, inclui header)
+      bytes 1-2: packet_no (uint16 little-endian)
+      bytes 3-4: total_packets (uint16 little-endian)
+      bytes 5-6: total_bytes (uint16 little-endian, inclui header)
       bytes 7+ : payload
     """
 
@@ -77,9 +77,9 @@ def parse_cassia_value(hex_str: str) -> Dict[str, Any]:
         raise ValueError("packet_too_short len=%s" % len(raw))
 
     packet_id = raw[0]
-    packet_no = (raw[1] << 8) | raw[2]
-    total_packets = (raw[3] << 8) | raw[4]
-    total_bytes = (raw[5] << 8) | raw[6]
+    packet_no = int.from_bytes(raw[1:3], byteorder="little")
+    total_packets = int.from_bytes(raw[3:5], byteorder="little")
+    total_bytes = int.from_bytes(raw[5:7], byteorder="little")
 
     if total_packets <= 0:
         raise ValueError("invalid_total_packets total_packets=%s" % total_packets)
@@ -96,17 +96,12 @@ def parse_cassia_value(hex_str: str) -> Dict[str, Any]:
     payload = packet[HEADER_LEN:]
 
     return {
-        "kind": "data_packet",
         "packet_id": packet_id,
         "packet_type": packet_type_name(packet_id),
-        "sensor_id": packet_id if is_sensor_packet(packet_id) else None,
         "packet_no": packet_no,
         "total_packets": total_packets,
         "total_bytes": total_bytes,
-        "header_len": HEADER_LEN,
         "payload": payload,
-        "payload_hex": payload.hex(),
-        "raw_packet_hex": packet.hex(),
     }
 
 
