@@ -90,8 +90,7 @@ class ReadingAssembly:
         if pkt_key in self.packets:
             old = self.packets[pkt_key]
             if (
-                old.get("payload") == payload
-                and old.get("total_bytes") == total_bytes
+                old.get("total_bytes") == total_bytes
                 and old.get("total_packets") == total_packets
             ):
                 return True, "duplicate"
@@ -102,7 +101,6 @@ class ReadingAssembly:
             "packet_type": packet_type_name(packet_id),
             "packet_no": packet_no,
             "total_packets": total_packets,
-            "payload": payload,
             "total_bytes": total_bytes,
         }
 
@@ -301,14 +299,15 @@ def assembly_time_bucket(ts_epoch, bucket_seconds=30):
     return int(ts_epoch // bucket_seconds)
 
 
-def find_matching_assembly(assemblies, device, pkt, received_at_epoch):
+def find_matching_assembly(assemblies, device_assemblies, device, pkt, received_at_epoch):
     packet_id = pkt["packet_id"]
     packet_no = pkt["packet_no"]
     now = received_at_epoch if received_at_epoch is not None else time.time()
 
     candidates = []
-    for key, asm in assemblies.items():
-        if not key.startswith(device + ":"):
+    for key in list(device_assemblies.get(device, [])):
+        asm = assemblies.get(key)
+        if asm is None:
             continue
 
         if asm.is_complete():
@@ -431,38 +430,10 @@ def build_success_event(assembly):
     return event
 
 
-def build_error_event(assembly, error_code, error_message, missing_packets=None, gateway_identity=None):
-    if missing_packets is None:
-        missing_packets = []
-
-    return {
-        "ap": assembly.ap,
-        "device": assembly.device,
-        "endSlaveReceiptAt": iso_utc_from_epoch(assembly.last_packet_at or assembly.last_update_at),
-        "errorCode": error_code,
-        "errorMessage": error_message,
-        "payloadBytesReceived": assembly.bytes_received,
-        "receivedPackets": len(assembly.packets),
-        "sensorPacketCount": assembly.sensor_packet_count(),
-        "startSlaveReceiptAt": iso_utc_from_epoch(assembly.first_packet_at or assembly.started_at),
-        "totalPacketsExpected": assembly.total_packets_expected_for_frame(),
-        "missingPackets": missing_packets,
-        "assemblyAgeMs": assembly.age_ms(),
-        "packetTypes": assembly.packet_types_summary(),
-        "controlFrames": {
-            "hasStart": assembly.start_payload is not None,
-            "hasTimestamp": assembly.timestamp_payload is not None,
-            "hasEnd": assembly.end_payload is not None,
-            "startPacketNo": assembly.start_packet_no,
-            "timestampPacketNo": assembly.timestamp_packet_no,
-            "endPacketNo": assembly.end_packet_no,
-        },
-    }
-
 
 def try_put_outbound(outbound_queue, event, stats):
     try:
-        outbound_queue.put(event, timeout=0.5)
+        outbound_queue.put_nowait(event)
         stats.inc("outbound_enqueued", 1)
         stats.observe_outbound_queue_depth(outbound_queue.qsize())
         return True
@@ -472,7 +443,7 @@ def try_put_outbound(outbound_queue, event, stats):
             SERVICE,
             "WARN",
             "outbound_queue_full_drop",
-            "Fila de saída cheia; evento final descartado",
+            "Fila de saída cheia; leitura descartada",
             device=event.get("device"),
         )
         return False
@@ -486,16 +457,43 @@ def assembler_loop(
     assembly_timeout_seconds,
     max_open_assemblies,
     progress_every_completed,
-    gateway_identity=None,
 ):
     assemblies = {}
+    device_assemblies = {}  # device -> set[key], for O(1) lookup
     last_housekeeping = time.monotonic()
+
+    # Acumuladores locais: flush para stats uma vez por ciclo de housekeeping
+    # (evita aquisição de lock por pacote individual)
+    _acc = {
+        "assemblies_created": 0,
+        "assemblies_completed": 0,
+        "assemblies_invalid": 0,
+        "assemblies_timed_out": 0,
+        "assemblies_evicted": 0,
+        "duplicate_packets": 0,
+        "completed_samples": 0,
+        "completed_payload_bytes": 0,
+    }
+    _max_pq_depth = 0
+    _max_age_ms = 0
+
+    def _remove_assembly(key):
+        asm = assemblies.pop(key, None)
+        if asm is not None:
+            keys = device_assemblies.get(asm.device)
+            if keys is not None:
+                keys.discard(key)
+                if not keys:
+                    del device_assemblies[asm.device]
+        return asm
 
     while (not should_stop()) or (not packet_queue.empty()) or assemblies:
         item = None
         try:
             item = packet_queue.get(timeout=0.1)
-            stats.observe_packet_queue_depth(packet_queue.qsize())
+            depth = packet_queue.qsize()
+            if depth > _max_pq_depth:
+                _max_pq_depth = depth
         except Empty:
             pass
 
@@ -507,32 +505,31 @@ def assembler_loop(
             ap = item["ap"]
             received_at_epoch = item.get("receivedAtEpoch")
 
-            key, asm = find_matching_assembly(assemblies, device, pkt, received_at_epoch)
+            key, asm = find_matching_assembly(assemblies, device_assemblies, device, pkt, received_at_epoch)
 
             if asm is None:
                 if len(assemblies) >= max_open_assemblies:
                     oldest_key = min(assemblies.keys(), key=lambda k: assemblies[k].last_update_at)
-                    oldest = assemblies.pop(oldest_key)
-                    stats.inc("assemblies_evicted", 1)
-                    stats.set("assemblies_open", len(assemblies))
+                    oldest = _remove_assembly(oldest_key)
+                    _acc["assemblies_evicted"] += 1
 
-                    evt = build_error_event(
-                        oldest,
+                    jlog(
+                        SERVICE,
+                        "WARN",
                         "assembly_evicted",
                         "Leitura descartada por proteção de memória no edge",
-                        oldest.missing_packets(),
-                        gateway_identity,
+                        device=oldest.device,
+                        ap=oldest.ap,
+                        assembly_age_ms=oldest.age_ms(),
+                        bytes_received=oldest.bytes_received,
+                        missing_count=len(oldest.missing_packets()),
                     )
-                    try_put_outbound(outbound_queue, evt, stats)
 
                 key = build_new_group_key(device, pkt, received_at_epoch)
-                asm = ReadingAssembly(
-                    device=device,
-                    ap=ap,
-                )
+                asm = ReadingAssembly(device=device, ap=ap)
                 assemblies[key] = asm
-                stats.inc("assemblies_created", 1)
-                stats.set("assemblies_open", len(assemblies))
+                device_assemblies.setdefault(device, set()).add(key)
+                _acc["assemblies_created"] += 1
 
             ok, reason = asm.add_part(
                 packet_id=pkt["packet_id"],
@@ -545,26 +542,26 @@ def assembler_loop(
             )
 
             if reason == "duplicate":
-                stats.inc("duplicate_packets", 1)
+                _acc["duplicate_packets"] += 1
 
             if not ok:
-                stats.inc("assemblies_invalid", 1)
+                _acc["assemblies_invalid"] += 1
 
-                evt = build_error_event(
-                    asm,
+                jlog(
+                    SERVICE,
+                    "WARN",
                     "assembly_invalid",
                     "Falha de consistência na leitura: %s" % reason,
-                    asm.missing_packets(),
-                    gateway_identity,
+                    device=device,
+                    ap=ap,
+                    bytes_received=asm.bytes_received,
+                    missing_count=len(asm.missing_packets()),
                 )
-                try_put_outbound(outbound_queue, evt, stats)
 
                 if key in assemblies:
-                    del assemblies[key]
-                    stats.set("assemblies_open", len(assemblies))
-                continue
+                    _remove_assembly(key)
 
-            if asm.is_complete():
+            elif asm.is_complete():
                 try:
                     ok_frames, frame_reason = validate_control_frames(asm)
                     if not ok_frames:
@@ -580,7 +577,7 @@ def assembler_loop(
                     ):
                         raise ValueError("no_sensor_payload_in_block")
 
-                    stats.inc("assemblies_completed", 1)
+                    _acc["assemblies_completed"] += 1
 
                     completed_samples = 0
                     if "accel" in evt:
@@ -595,27 +592,30 @@ def assembler_loop(
                         for _, payload in sensor_bucket.items():
                             completed_payload_bytes += len(payload)
 
-                    stats.inc("completed_samples", completed_samples)
-                    stats.inc("completed_payload_bytes", completed_payload_bytes)
-                    stats.observe_assembly_age_ms(asm.age_ms())
+                    _acc["completed_samples"] += completed_samples
+                    _acc["completed_payload_bytes"] += completed_payload_bytes
+
+                    age_ms = asm.age_ms()
+                    if age_ms > _max_age_ms:
+                        _max_age_ms = age_ms
 
                     try_put_outbound(outbound_queue, evt, stats)
 
                 except Exception as e:
-                    stats.inc("assemblies_invalid", 1)
+                    _acc["assemblies_invalid"] += 1
 
-                    evt = build_error_event(
-                        asm,
-                        "decode_error",
+                    jlog(
+                        SERVICE,
+                        "WARN",
+                        "assembly_decode_error",
                         "Erro ao reconstruir/decodificar leitura: %s" % str(e),
-                        asm.missing_packets(),
-                        gateway_identity,
+                        device=device,
+                        ap=ap,
+                        bytes_received=asm.bytes_received,
                     )
-                    try_put_outbound(outbound_queue, evt, stats)
 
                 if key in assemblies:
-                    del assemblies[key]
-                    stats.set("assemblies_open", len(assemblies))
+                    _remove_assembly(key)
 
         mono_now = time.monotonic()
         if mono_now - last_housekeeping >= 0.25:
@@ -626,28 +626,50 @@ def assembler_loop(
                     expired_keys.append(key)
 
             for key in expired_keys:
-                asm = assemblies.pop(key)
-                stats.inc("assemblies_timed_out", 1)
-                stats.set("assemblies_open", len(assemblies))
+                asm = _remove_assembly(key)
+                _acc["assemblies_timed_out"] += 1
 
-                evt = build_error_event(
-                    asm,
+                jlog(
+                    SERVICE,
+                    "WARN",
                     "assembly_timeout",
                     "Leitura incompleta descartada por timeout no edge",
-                    asm.missing_packets(),
-                    gateway_identity,
+                    device=asm.device,
+                    ap=asm.ap,
+                    assembly_age_ms=asm.age_ms(),
+                    bytes_received=asm.bytes_received,
+                    missing_count=len(asm.missing_packets()),
+                    has_start=asm.start_payload is not None,
+                    has_timestamp=asm.timestamp_payload is not None,
+                    has_end=asm.end_payload is not None,
                 )
-                try_put_outbound(outbound_queue, evt, stats)
+
+            # flush acumuladores para stats com uma única aquisição de lock
+            stats.inc_many(_acc)
+            stats.set("assemblies_open", len(assemblies))
+            stats.observe_packet_queue_depth(_max_pq_depth)
+            stats.observe_assembly_age_ms(_max_age_ms)
+
+            for k in _acc:
+                _acc[k] = 0
+            _max_pq_depth = 0
+            _max_age_ms = 0
 
             last_housekeeping = mono_now
 
+    # garante que contadores acumulados desde o último housekeeping não se percam
+    stats.inc_many(_acc)
+    stats.set("assemblies_open", len(assemblies))
+
     if assemblies:
         for _, asm in list(assemblies.items()):
-            evt = build_error_event(
-                asm,
+            jlog(
+                SERVICE,
+                "WARN",
                 "shutdown_incomplete",
                 "Leitura incompleta descartada no encerramento do processo",
-                asm.missing_packets(),
-                gateway_identity,
+                device=asm.device,
+                ap=asm.ap,
+                bytes_received=asm.bytes_received,
+                missing_count=len(asm.missing_packets()),
             )
-            try_put_outbound(outbound_queue, evt, stats)

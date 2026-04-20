@@ -2,16 +2,29 @@
   "gateway_api_base": "http://10.10.10.254",
   "sse_path": "/gatt/nodes?event=1",
 
-  "cloud_url": "https://sensors.synchroone.com",
+  "cloud_url": "http://sensors.synchroone.com",
   "cloud_ingest_path": "/sensors/cassia",
 
   "api_key": "SUA_API_KEY_AQUI",
   "api_key_header": "X-API-Key",
 
   "timeout_seconds": 5,
-  "batch_size": 20,
   "flush_interval_seconds": 1,
-  "print_every": 100,
+  "metrics_interval_seconds": 5,
 
-  "spool_max_mb": 20
+  "spool_max_mb": 20,
+  "spool_write_batch_size": 100,
+  "spool_write_batch_wait_ms": 200,
+
+  "packet_queue_max": 20000,
+  "outbound_queue_max": 2000,
+
+  "assembly_timeout_seconds": 3,
+  "max_open_assemblies": 200,
+
+  "capture_progress_every": 5000,
+  "assembly_progress_every": 100,
+
+  "cassia_info_enabled": 1,
+  "cassia_info_required": 0
 }

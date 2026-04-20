@@ -101,6 +101,12 @@ class Stats:
         with self._lock:
             setattr(self, field, getattr(self, field) + value)
 
+    def inc_many(self, delta):
+        with self._lock:
+            for field, value in delta.items():
+                if value:
+                    setattr(self, field, getattr(self, field) + value)
+
     def set(self, field, value):
         with self._lock:
             setattr(self, field, value)
@@ -491,7 +497,6 @@ def main():
             assembly_timeout_seconds,
             max_open_assemblies,
             assembly_progress_every,
-            gateway_identity,
         ),
         daemon=True,
     )
@@ -547,9 +552,12 @@ def main():
                 "Conectando ao SSE GATT",
                 sse_url=gatt_url,
             )
-            attempt = 0
+            events_this_connection = 0
 
-            for data_str in sse_events(gatt_url, read_timeout=60, should_stop=lambda: STOP):
+            def should_stop_sse():
+                return bool(STOP)
+
+            for data_str in sse_events(gatt_url, read_timeout=60, should_stop=should_stop_sse):
                 if STOP:
                     break
 
@@ -557,6 +565,7 @@ def main():
                     continue
 
                 stats.inc("total_sse_events", 1)
+                events_this_connection += 1
 
                 try:
                     evt = json.loads(data_str)
@@ -663,6 +672,8 @@ def main():
                     )
 
             if not STOP:
+                if events_this_connection > 0:
+                    attempt = 0
                 raise RuntimeError("SSE GATT encerrou")
 
         except Exception as e:
