@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"/Volumes/Extreme SSD/Synchroone/Projetos/Greenboard/SYNCHROONE_0001_FIRMWARE_SyncBLE_APP-master\" -type f -name \"*.c\" -o -name \"*.h\" | head -30)",
+      "Read(//Volumes/Extreme SSD/Synchroone/Projetos/Greenboard/SYNCHROONE_0001_FIRMWARE_SyncBLE_APP-master/**)",
+      "WebSearch",
+      "WebFetch(domain:cassiasdk.docs.apiary.io)",
+      "WebFetch(domain:library.e.abb.com)",
+      "WebFetch(domain:www.manualslib.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -s \"https://raw.githubusercontent.com/CassiaNetworks/CassiaSDKGuide/master/README.md\")",
+      "Bash(curl -s \"https://github.com/CassiaNetworks/CassiaSDKGuide/wiki/Gateway-Pairing-API-Usage-Introduction\")",
+      "Bash(python3 -c \"import sys,re; txt=sys.stdin.read\\(\\); body=re.search\\(r'<article[^>]*>\\(.*?\\)</article>', txt, re.DOTALL\\); print\\(body.group\\(1\\)[:5000] if body else txt[:3000]\\)\")",
+      "Bash(curl -s \"https://github.com/CassiaNetworks/CassiaSDKGuide/wiki/Read-Write-the-Value-of-a-Specific-Characteristic\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -m json.tool)"
+    ]
+  }
+}

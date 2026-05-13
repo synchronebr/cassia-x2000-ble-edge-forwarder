@@ -16,6 +16,7 @@ Entrar no gateway > Container > Container Operation > Remote Login
 Utilizar as credenciais:
 - Login: cassia
 - Pass: cassia-XXXXXX (últimos códigos do mac adress "cassia-e59684")
+cassia-e59684
 
 ```bash
 cat /opt/sync_reading/logs/app.log
