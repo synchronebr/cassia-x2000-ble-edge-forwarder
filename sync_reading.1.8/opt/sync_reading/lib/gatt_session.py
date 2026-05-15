@@ -17,6 +17,7 @@ Lança RuntimeError em qualquer falha de comunicação GATT.
 """
 import json
 import struct
+import time
 
 from lib.cassia_api import read_handle, write_handle, pair_device
 from lib.log import jlog
@@ -26,13 +27,18 @@ SERVICE = "sync_reading"
 # Handles fixos — confirmados em campo (ConnectDeviceService.ts):
 # "handles resolvidos — SN:20 SLOT0:38 SLOT1:41 TYPE:44 PASSWORD:54 ADDRESS:48 VALUE:51 DATA_ARRAY_VALUE:58 NOTIFY:59"
 # DATA service layout (data.c): ARRAY(58)+CCCD(59)+UserDesc(60) | SFC(61-63) | REQUEST(64-66)
-HANDLE_SN       = 20   # INFO/SN:       12 bytes LE (UID Word0+Word1+Word2) — sem auth
-HANDLE_SLOT0    = 38   # INFO/SLOT_0:   1 byte — tipo da central no slot 0
-HANDLE_SLOT1    = 41   # INFO/SLOT_1:   1 byte — tipo da central no slot 1
-HANDLE_TYPE     = 44   # INFO/TYPE:     write 1 byte — firmware aloca slot automaticamente
-HANDLE_PASSWORD = 54   # CONFIG/PASSWORD: write uint32 LE — autentica sessão
-HANDLE_CCCD     = 59   # DATA/ARRAY (58) CCCD — habilita indications
-HANDLE_REQUEST  = 65   # DATA/REQUEST value — write 0x01 = DATA_REQUEST_ALL_DATA
+HANDLE_SN             = 20   # INFO/SN:       12 bytes LE (UID Word0+Word1+Word2) — sem auth
+HANDLE_SLOT0          = 38   # INFO/SLOT_0:   1 byte — tipo da central no slot 0
+HANDLE_SLOT1          = 41   # INFO/SLOT_1:   1 byte — tipo da central no slot 1
+HANDLE_TYPE           = 44   # INFO/TYPE:     write 1 byte — firmware aloca slot automaticamente
+HANDLE_PASSWORD       = 54   # CONFIG/PASSWORD: write uint32 LE — autentica sessão
+HANDLE_CONFIG_ADDRESS = 48   # CONFIG/ADDRESS: write uint32 LE — ID do parâmetro a acessar
+HANDLE_CONFIG_VALUE   = 51   # CONFIG/VALUE:   read/write uint32 LE — valor do parâmetro
+HANDLE_CCCD           = 59   # DATA/ARRAY (58) CCCD — habilita indications
+HANDLE_REQUEST        = 65   # DATA/REQUEST value — write 0x01 = DATA_REQUEST_ALL_DATA
+
+# IDs dos parâmetros do firmware (paramEntryTable)
+PARAM_EPOCH_TIME = 2002  # epochTime — Unix timestamp em segundos (uint32 LE)
 
 # Tipo desta central registrado nos slots do firmware.
 # 66 decimal (0x42) — deve coincidir com OUR_CENTRAL_TYPE do firmware (ble_session.c).
@@ -82,7 +88,7 @@ def generate_unlock_password(uid0: int, uid1: int, uid2: int) -> int:
 
 # ── setup principal ───────────────────────────────────────────────────────────
 
-def gatt_setup(gateway_api: str, mac: str, timeout: int = 5, addr_type: str = "public") -> bool:
+def gatt_setup(gateway_api: str, mac: str, timeout: int = 5, addr_type: str = "public", sync_epoch: bool = False) -> bool:
     """
     Executa o setup GATT completo logo após connect_device() retornar 2xx.
     Deve rodar em thread worker — bloqueia por várias chamadas HTTP sequenciais.
@@ -119,6 +125,22 @@ def gatt_setup(gateway_api: str, mac: str, timeout: int = 5, addr_type: str = "p
 
     # 2. Autenticar sessão BLE (CONFIG/PASSWORD — uint32 LE, 4 bytes)
     _write(gateway_api, mac, HANDLE_PASSWORD, struct.pack('<I', password).hex(), timeout)
+
+    # 2a. Sync de epoch — opcional, não-crítico: falha não aborta a sessão
+    if sync_epoch:
+        try:
+            epoch_sec = int(time.time())
+            _write(gateway_api, mac, HANDLE_CONFIG_ADDRESS,
+                   struct.pack('<I', PARAM_EPOCH_TIME).hex(), timeout)
+            _write(gateway_api, mac, HANDLE_CONFIG_VALUE,
+                   struct.pack('<I', epoch_sec).hex(), timeout)
+            jlog(SERVICE, "INFO", "gatt_epoch_synced",
+                 "Epoch time sincronizado com firmware (sem save-to-flash)",
+                 mac=mac, epoch_sec=epoch_sec)
+        except Exception as e:
+            jlog(SERVICE, "WARN", "gatt_epoch_sync_error",
+                 "Falha ao sincronizar epoch; sessão de dados continua normalmente",
+                 mac=mac, error=str(e))
 
     # 3. Verificar slots — abortar se outro gateway do mesmo tipo já está conectado
     slot0 = _read_byte(gateway_api, mac, HANDLE_SLOT0, timeout)

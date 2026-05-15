@@ -14,6 +14,8 @@ Estado de slot:
 Cada chamada HTTP (connect/disconnect) roda em thread daemon própria para não
 bloquear o loop de 50 ms.
 """
+import json
+import os
 import threading
 import time
 from queue import Empty
@@ -25,6 +27,7 @@ from lib.log import jlog
 
 SERVICE = "sync_reading"
 NUM_CHIPS = 2
+_EPOCH_SYNC_INTERVAL = 7 * 24 * 3600  # 7 dias em segundos
 
 
 class ConnectionManager:
@@ -41,6 +44,7 @@ class ConnectionManager:
         max_per_chip: int = 20,
         addr_type: str = "random",
         rssi_cache: dict = None,
+        epoch_sync_path: str = "",
     ):
         self.gateway_api = gateway_api
         self.scan_queue = scan_queue
@@ -56,6 +60,9 @@ class ConnectionManager:
 
         self.cooldown_seconds = connect_timeout * 6  # ~30s padrão com timeout=5
         self._lock = threading.Lock()
+        self._epoch_sync_path = epoch_sync_path
+        self._epoch_sync_lock = threading.Lock()
+        self._epoch_sync_state: dict = self._load_epoch_sync_file()
 
         # Número de slots ocupados (ativo + in-flight) por chip
         self._chip_count = [0] * NUM_CHIPS
@@ -88,6 +95,39 @@ class ConnectionManager:
             "pending_frames": 1,
             "frames_received": 0,
         })
+
+    # ------------------------------------------------------------------
+    # Epoch sync — persiste last_sync por MAC em arquivo JSON
+    # ------------------------------------------------------------------
+
+    def _load_epoch_sync_file(self) -> dict:
+        if not self._epoch_sync_path:
+            return {}
+        try:
+            with open(self._epoch_sync_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _needs_epoch_sync(self, mac: str) -> bool:
+        with self._epoch_sync_lock:
+            last = self._epoch_sync_state.get(mac, 0)
+        return (time.time() - last) >= _EPOCH_SYNC_INTERVAL
+
+    def _mark_epoch_synced(self, mac: str):
+        now = time.time()
+        with self._epoch_sync_lock:
+            self._epoch_sync_state[mac] = now
+            if not self._epoch_sync_path:
+                return
+            try:
+                tmp = self._epoch_sync_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self._epoch_sync_state, f)
+                os.replace(tmp, self._epoch_sync_path)
+            except Exception as e:
+                jlog(SERVICE, "WARN", "epoch_sync_save_error",
+                     "Falha ao persistir epoch_sync.json", mac=mac, error=str(e))
 
     # ------------------------------------------------------------------
     # Gestão de slots de chip
@@ -478,11 +518,13 @@ class ConnectionManager:
 
         # Passo 2: setup GATT — autenticação, slot check e habilitar indications
         # Roda fora do lock (bloqueia por várias chamadas HTTP sequenciais)
+        sync_epoch = self._needs_epoch_sync(mac)
         try:
             slot_ok = gatt_setup(
                 self.gateway_api, mac,
                 timeout=self.connect_timeout,
                 addr_type=candidate.get("addr_type", self.addr_type),
+                sync_epoch=sync_epoch,
             )
         except Exception as e:
             jlog(SERVICE, "WARN", "gatt_setup_error",
@@ -509,6 +551,9 @@ class ConnectionManager:
             self.stats.inc("connection_retries", 1)
             return
 
+        if sync_epoch:
+            self._mark_epoch_synced(mac)
+
         # Setup concluído — congelar pending_frames do advertising e iniciar janela
         with self._lock:
             state = self._sensor_state.get(mac)
@@ -532,6 +577,7 @@ def connection_manager_loop(
     max_per_chip: int = 20,
     addr_type: str = "random",
     rssi_cache: dict = None,
+    epoch_sync_path: str = "",
 ):
     manager = ConnectionManager(
         gateway_api=gateway_api,
@@ -545,5 +591,6 @@ def connection_manager_loop(
         max_per_chip=max_per_chip,
         addr_type=addr_type,
         rssi_cache=rssi_cache,
+        epoch_sync_path=epoch_sync_path,
     )
     manager.run()

@@ -13,7 +13,9 @@
       "Bash(python3 -c \"import sys,re; txt=sys.stdin.read\\(\\); body=re.search\\(r'<article[^>]*>\\(.*?\\)</article>', txt, re.DOTALL\\); print\\(body.group\\(1\\)[:5000] if body else txt[:3000]\\)\")",
       "Bash(curl -s \"https://github.com/CassiaNetworks/CassiaSDKGuide/wiki/Read-Write-the-Value-of-a-Specific-Characteristic\")",
       "Bash(python3 -c ' *)",
-      "Bash(python3 -m json.tool)"
+      "Bash(python3 -m json.tool)",
+      "Bash(find /Users/vitorbonet/Documents/Projects/synchroone -name \"*connectDeviceFast*\" -o -name \"*ConnectDeviceFast*\" 2>/dev/null | head -20)",
+      "Read(//Users/vitorbonet/Documents/Projects/synchroone/**)"
     ]
   }
 }

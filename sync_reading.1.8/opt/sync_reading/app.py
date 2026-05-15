@@ -28,6 +28,7 @@ LOG_DIR = os.path.join(BASE_DIR, "logs")
 SPOOL_DIR = os.path.join(BASE_DIR, "spool")
 EVENT_PENDING = os.path.join(SPOOL_DIR, "events_pending.jsonl")
 EVENT_SENDING = os.path.join(SPOOL_DIR, "events_pending.jsonl.sending")
+EPOCH_SYNC = os.path.join(BASE_DIR, "epoch_sync.json")
 
 STOP = False
 
@@ -564,6 +565,7 @@ def main():
             max_per_chip=max_connections_per_chip,
             addr_type=ble_addr_type,
             rssi_cache=rssi_cache,
+            epoch_sync_path=EPOCH_SYNC,
         ),
         daemon=True,
     )
