@@ -15,6 +15,7 @@ from lib.spool import flush_spool_one_by_one
 from lib.ble_packet import parse_cassia_value
 from lib.assembly import assembler_loop
 from lib.cassia_info import fetch_cassia_info, normalize_gateway_identity
+from lib.connectivity import check_internet
 
 APP_NAME = "sync_reading"
 SERVICE = "sync_reading"
@@ -358,6 +359,29 @@ def metrics_loop(stats, packet_queue, outbound_queue, interval_seconds):
         )
 
 
+def connectivity_monitor_loop(cloud_url, check_timeout, check_interval, internet_ok_event):
+    prev_ok = None
+    while not STOP:
+        ok = check_internet(cloud_url, timeout=check_timeout)
+
+        if ok:
+            internet_ok_event.set()
+        else:
+            internet_ok_event.clear()
+
+        if ok != prev_ok:
+            if ok:
+                jlog(SERVICE, "INFO", "internet_ok", "Acesso à internet disponível", cloud_url=cloud_url)
+            else:
+                jlog(SERVICE, "WARN", "internet_lost", "Sem acesso à internet; captura SSE será pausada", cloud_url=cloud_url)
+            prev_ok = ok
+
+        slept = 0.0
+        while not STOP and slept < check_interval:
+            time.sleep(0.5)
+            slept += 0.5
+
+
 def main():
     ensure_dirs()
 
@@ -403,6 +427,9 @@ def main():
     cassia_info_required = get_int(cfg, "cassia_info_required", 0)
     cassia_info_timeout_seconds = get_int(cfg, "cassia_info_timeout_seconds", timeout)
 
+    connectivity_check_interval = get_int(cfg, "connectivity_check_interval_seconds", 15)
+    connectivity_check_timeout = get_int(cfg, "connectivity_check_timeout_seconds", timeout)
+
     if not api_key:
         jlog(
             SERVICE,
@@ -415,6 +442,7 @@ def main():
     packet_queue = Queue(maxsize=packet_queue_max)
     outbound_queue = Queue(maxsize=outbound_queue_max)
     spool_lock = threading.Lock()
+    internet_ok = threading.Event()
 
     gateway_identity = {
         "gatewayMac": "",
@@ -541,9 +569,31 @@ def main():
     )
     metrics.start()
 
+    connectivity_monitor = threading.Thread(
+        target=connectivity_monitor_loop,
+        args=(cloud_url, connectivity_check_timeout, connectivity_check_interval, internet_ok),
+        daemon=True,
+    )
+    connectivity_monitor.start()
+
     attempt = 0
 
     while not STOP:
+        if not internet_ok.is_set():
+            jlog(
+                SERVICE,
+                "WARN",
+                "no_internet_pause",
+                "Sem acesso à internet; captura SSE pausada",
+                cloud_url=cloud_url,
+            )
+            while not STOP and not internet_ok.is_set():
+                time.sleep(1.0)
+            if STOP:
+                break
+            jlog(SERVICE, "INFO", "internet_restored", "Acesso à internet restaurado; retomando captura")
+            attempt = 0
+
         try:
             jlog(
                 SERVICE,
@@ -555,7 +605,7 @@ def main():
             events_this_connection = 0
 
             def should_stop_sse():
-                return bool(STOP)
+                return bool(STOP) or not internet_ok.is_set()
 
             for data_str in sse_events(gatt_url, read_timeout=60, should_stop=should_stop_sse):
                 if STOP:
@@ -672,6 +722,9 @@ def main():
                     )
 
             if not STOP:
+                if not internet_ok.is_set():
+                    # SSE encerrou porque a internet caiu — não é um erro
+                    continue
                 if events_this_connection > 0:
                     attempt = 0
                 raise RuntimeError("SSE GATT encerrou")
@@ -679,6 +732,9 @@ def main():
         except Exception as e:
             if STOP:
                 break
+
+            if not internet_ok.is_set():
+                continue
 
             attempt += 1
             stats.inc("reader_reconnects", 1)

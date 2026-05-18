@@ -26,5 +26,8 @@
   "assembly_progress_every": 100,
 
   "cassia_info_enabled": 1,
-  "cassia_info_required": 0
+  "cassia_info_required": 0,
+
+  "connectivity_check_interval_seconds": 15,
+  "connectivity_check_timeout_seconds": 5
 }
