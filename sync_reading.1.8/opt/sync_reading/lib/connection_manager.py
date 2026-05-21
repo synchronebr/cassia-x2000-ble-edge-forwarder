@@ -531,6 +531,10 @@ class ConnectionManager:
                  "Erro no setup GATT; desconectando sensor",
                  mac=mac, chip=chip, error=str(e))
             self._start_disconnect_thread(mac, chip)
+            with self._lock:
+                st = self._sensor_state.get(mac)
+                if st:
+                    st["last_seq_seen"] = None
             self.stats.inc("connection_errors", 1)
             return
 
