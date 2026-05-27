@@ -30,6 +30,10 @@
   "max_connections_per_chip": 20,
   "ble_addr_type": "random",
 
+  "gateway_http_concurrency": 6,
+  "connect_error_cooldown_base_seconds": 10,
+  "connect_error_cooldown_max_seconds": 60,
+
   "capture_progress_every": 5000,
   "assembly_progress_every": 100,
 

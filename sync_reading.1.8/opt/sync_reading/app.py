@@ -17,6 +17,7 @@ from lib.assembly import assembler_loop
 from lib.cassia_info import fetch_cassia_info, normalize_gateway_identity
 from lib.scan_reader import scan_reader_loop
 from lib.connection_manager import connection_manager_loop
+from lib.cassia_api import set_gateway_concurrency, get_busy_responses
 
 APP_NAME = "sync_reading"
 SERVICE = "sync_reading"
@@ -29,6 +30,7 @@ SPOOL_DIR = os.path.join(BASE_DIR, "spool")
 EVENT_PENDING = os.path.join(SPOOL_DIR, "events_pending.jsonl")
 EVENT_SENDING = os.path.join(SPOOL_DIR, "events_pending.jsonl.sending")
 EPOCH_SYNC = os.path.join(BASE_DIR, "epoch_sync.json")
+PAIRED_MACS = os.path.join(BASE_DIR, "paired_macs.json")
 
 STOP = False
 
@@ -355,6 +357,7 @@ def metrics_loop(stats, packet_queue, outbound_queue, scan_queue, interval_secon
             connections_completed=snap["connections_completed"],
             connection_retries=snap["connection_retries"],
             connection_errors=snap["connection_errors"],
+            gateway_busy_responses=get_busy_responses(),
             total_sse_events=snap["total_sse_events"],
             invalid_json_events=snap["invalid_json_events"],
             invalid_value_events=snap["invalid_value_events"],
@@ -441,6 +444,14 @@ def main():
     connection_retry_margin_seconds = get_int(cfg, "connection_retry_margin_seconds", 5)
     max_connections_per_chip = get_int(cfg, "max_connections_per_chip", 20)
     ble_addr_type = get_str(cfg, "ble_addr_type", "random")
+
+    gateway_http_concurrency = get_int(cfg, "gateway_http_concurrency", 6)
+    connect_error_cooldown_base = get_int(cfg, "connect_error_cooldown_base_seconds", 10)
+    connect_error_cooldown_max = get_int(cfg, "connect_error_cooldown_max_seconds", 60)
+
+    # Aplica o limite global de chamadas HTTP simultâneas ao gateway Cassia.
+    # Reduz "gateway busy" quando vários sensores anunciam ao mesmo tempo.
+    set_gateway_concurrency(gateway_http_concurrency)
 
     spool_write_batch_size = get_int(cfg, "spool_write_batch_size", 100)
     spool_write_batch_wait_ms = get_int(cfg, "spool_write_batch_wait_ms", 200)
@@ -537,6 +548,9 @@ def main():
         connect_timeout_seconds=connect_timeout_seconds,
         connection_retry_margin_seconds=connection_retry_margin_seconds,
         max_connections_per_chip=max_connections_per_chip,
+        gateway_http_concurrency=gateway_http_concurrency,
+        connect_error_cooldown_base_seconds=connect_error_cooldown_base,
+        connect_error_cooldown_max_seconds=connect_error_cooldown_max,
         spool_write_batch_size=spool_write_batch_size,
         spool_write_batch_wait_ms=spool_write_batch_wait_ms,
         gateway_identity_loaded=stats.gateway_identity_loaded,
@@ -566,6 +580,9 @@ def main():
             addr_type=ble_addr_type,
             rssi_cache=rssi_cache,
             epoch_sync_path=EPOCH_SYNC,
+            paired_macs_path=PAIRED_MACS,
+            error_cooldown_base=connect_error_cooldown_base,
+            error_cooldown_max=connect_error_cooldown_max,
         ),
         daemon=True,
     )

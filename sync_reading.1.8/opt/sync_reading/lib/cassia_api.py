@@ -2,14 +2,61 @@
 """
 Cliente HTTP para a REST API do Cassia X2000.
 Sem dependências externas — usa apenas urllib/http.client da stdlib.
+
+Inclui semáforo global limitando chamadas concorrentes ao gateway e
+detecção de respostas "gateway busy" (HTTP 503 / body "busy"/"resource")
+com backoff aleatório antes de liberar o slot do semáforo.
 """
 import http.client
 import json as _json
+import random
+import threading
+import time
 from urllib.parse import urlparse
+
+# Limita chamadas HTTP simultâneas ao gateway Cassia. Inicializado com 6 —
+# pode ser ajustado via set_gateway_concurrency() no boot.
+_SEM = threading.Semaphore(6)
+
+_BUSY_LOCK = threading.Lock()
+_busy_responses = 0
+
+
+def set_gateway_concurrency(n: int):
+    """Reinicializa o semáforo global com novo limite. Chamar uma vez no boot."""
+    global _SEM
+    _SEM = threading.Semaphore(max(1, int(n)))
+
+
+def get_busy_responses() -> int:
+    """Total de respostas 'gateway busy' observadas desde o boot."""
+    with _BUSY_LOCK:
+        return _busy_responses
+
+
+def _record_busy():
+    global _busy_responses
+    with _BUSY_LOCK:
+        _busy_responses += 1
+
+
+def _is_busy_response(status: int, body: str) -> bool:
+    if status == 503:
+        return True
+    lower = body.lower()
+    return "busy" in lower or "resource" in lower or "try later" in lower
 
 
 def _request(method: str, url: str, timeout: int = 5, body: dict = None):
-    """Executa uma requisição HTTP e retorna (status_code, body_str)."""
+    """Executa uma requisição HTTP e retorna (status_code, body_str).
+
+    Serializado pelo semáforo global — o número de chamadas simultâneas ao
+    gateway é limitado para evitar saturar a fila HTTP interna do Cassia.
+
+    Se a resposta indicar sobrecarga (503 ou body com 'busy'/'resource'),
+    dorme com jitter ANTES de liberar o slot do semáforo. Isso garante que
+    todas as threads recuem juntas durante o pico de pressão.
+    """
     p = urlparse(url)
     host = p.hostname
     if not host:
@@ -18,25 +65,33 @@ def _request(method: str, url: str, timeout: int = 5, body: dict = None):
     path = p.path + ("?" + p.query if p.query else "")
 
     Conn = http.client.HTTPSConnection if p.scheme == "https" else http.client.HTTPConnection
-    conn = Conn(host, port, timeout=timeout)
-    try:
-        if body is not None:
-            encoded = _json.dumps(body).encode("utf-8")
-            headers = {
-                "Content-Type": "application/json",
-                "Content-Length": str(len(encoded)),
-            }
-            conn.request(method, path, body=encoded, headers=headers)
-        else:
-            conn.request(method, path, headers={"Content-Length": "0"})
-        resp = conn.getresponse()
-        body_str = resp.read().decode("utf-8", errors="ignore")
-        return resp.status, body_str
-    finally:
+
+    with _SEM:
+        conn = Conn(host, port, timeout=timeout)
         try:
-            conn.close()
-        except Exception:
-            pass
+            if body is not None:
+                encoded = _json.dumps(body).encode("utf-8")
+                headers = {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(encoded)),
+                }
+                conn.request(method, path, body=encoded, headers=headers)
+            else:
+                conn.request(method, path, headers={"Content-Length": "0"})
+            resp = conn.getresponse()
+            status = resp.status
+            body_str = resp.read().decode("utf-8", errors="ignore")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if _is_busy_response(status, body_str):
+            _record_busy()
+            time.sleep(random.uniform(0.5, 2.0))
+
+        return status, body_str
 
 
 def connect_device(gateway_api: str, mac: str, chip: int, timeout: int = 5, addr_type: str = "random"):

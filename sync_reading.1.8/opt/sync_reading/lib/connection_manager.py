@@ -45,6 +45,9 @@ class ConnectionManager:
         addr_type: str = "random",
         rssi_cache: dict = None,
         epoch_sync_path: str = "",
+        paired_macs_path: str = "",
+        error_cooldown_base: int = 10,
+        error_cooldown_max: int = 60,
     ):
         self.gateway_api = gateway_api
         self.scan_queue = scan_queue
@@ -57,12 +60,18 @@ class ConnectionManager:
         self.max_per_chip = max_per_chip
         self.addr_type = addr_type
         self.rssi_cache = rssi_cache if rssi_cache is not None else {}
+        self.error_cooldown_base = max(1, int(error_cooldown_base))
+        self.error_cooldown_max = max(self.error_cooldown_base, int(error_cooldown_max))
 
         self.cooldown_seconds = connect_timeout * 6  # ~30s padrão com timeout=5
         self._lock = threading.Lock()
         self._epoch_sync_path = epoch_sync_path
         self._epoch_sync_lock = threading.Lock()
         self._epoch_sync_state: dict = self._load_epoch_sync_file()
+
+        self._paired_macs_path = paired_macs_path
+        self._paired_macs_lock = threading.Lock()
+        self._paired_macs: set = self._load_paired_macs()
 
         # Número de slots ocupados (ativo + in-flight) por chip
         self._chip_count = [0] * NUM_CHIPS
@@ -94,7 +103,79 @@ class ConnectionManager:
             "last_addr_type": None,
             "pending_frames": 1,
             "frames_received": 0,
+            "consecutive_connect_errors": 0,
+            "last_connect_error_at": None,
         })
+
+    # ------------------------------------------------------------------
+    # Cache de MACs já pareados por este container (paired_macs.json)
+    # ------------------------------------------------------------------
+
+    def _load_paired_macs(self) -> set:
+        if not self._paired_macs_path:
+            return set()
+        try:
+            with open(self._paired_macs_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return set(m.upper() for m in data if isinstance(m, str))
+        except Exception:
+            pass
+        return set()
+
+    def _save_paired_macs_unlocked(self):
+        if not self._paired_macs_path:
+            return
+        try:
+            tmp = self._paired_macs_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(sorted(self._paired_macs), f)
+            os.replace(tmp, self._paired_macs_path)
+        except Exception as e:
+            jlog(SERVICE, "WARN", "paired_macs_save_error",
+                 "Falha ao persistir paired_macs.json", error=str(e))
+
+    def _mark_paired(self, mac: str):
+        mac = mac.upper()
+        with self._paired_macs_lock:
+            if mac in self._paired_macs:
+                return
+            self._paired_macs.add(mac)
+            self._save_paired_macs_unlocked()
+
+    def _is_known_mac(self, mac: str) -> bool:
+        with self._paired_macs_lock:
+            return mac.upper() in self._paired_macs
+
+    # ------------------------------------------------------------------
+    # Cooldown progressivo após erro de conexão
+    # ------------------------------------------------------------------
+
+    def _error_cooldown_for(self, errors: int) -> float:
+        """Cooldown crescente: 1 erro=base, 2 erros=base*3, 3+=cap."""
+        if errors <= 0:
+            return 0.0
+        if errors == 1:
+            return float(self.error_cooldown_base)
+        if errors == 2:
+            return float(min(self.error_cooldown_base * 3, self.error_cooldown_max))
+        return float(self.error_cooldown_max)
+
+    def _record_connect_error(self, mac: str):
+        """Chamado de dentro do lock — registra erro e incrementa counter."""
+        state = self._sensor_state.get(mac)
+        if state is None:
+            return
+        state["last_connect_error_at"] = time.time()
+        state["consecutive_connect_errors"] = state.get("consecutive_connect_errors", 0) + 1
+
+    def _clear_connect_error(self, mac: str):
+        """Chamado de dentro do lock — reseta após sucesso completo."""
+        state = self._sensor_state.get(mac)
+        if state is None:
+            return
+        state["last_connect_error_at"] = None
+        state["consecutive_connect_errors"] = 0
 
     # ------------------------------------------------------------------
     # Epoch sync — persiste last_sync por MAC em arquivo JSON
@@ -182,11 +263,24 @@ class ConnectionManager:
             jlog(SERVICE, "INFO", "startup_cleanup", "Nenhuma conexão pré-existente encontrada")
             return
 
-        jlog(SERVICE, "INFO", "startup_cleanup",
-             "Desconectando devices pré-existentes do restart anterior",
-             count=len(nodes), macs=[n["mac"] for n in nodes])
+        ours = [n for n in nodes if self._is_known_mac(n["mac"])]
+        unknown = [n for n in nodes if not self._is_known_mac(n["mac"])]
 
-        for node in nodes:
+        if unknown:
+            jlog(SERVICE, "INFO", "startup_cleanup_skip_unknown",
+                 "Conexões pré-existentes desconhecidas (provavelmente pareadas manualmente) — preservadas",
+                 count=len(unknown), macs=[n["mac"] for n in unknown])
+
+        if not ours:
+            jlog(SERVICE, "INFO", "startup_cleanup",
+                 "Nenhuma conexão pré-existente conhecida pelo container")
+            return
+
+        jlog(SERVICE, "INFO", "startup_cleanup",
+             "Desconectando devices conhecidos do restart anterior",
+             count=len(ours), macs=[n["mac"] for n in ours])
+
+        for node in ours:
             mac = node["mac"]
             try:
                 status, _ = disconnect_device(self.gateway_api, mac, timeout=self.connect_timeout)
@@ -275,6 +369,15 @@ class ConnectionManager:
         if last_dc is not None:
             elapsed = time.time() - last_dc
             if elapsed < self.cooldown_seconds:
+                return
+
+        # Cool-down pós-erro de connect: cresce a cada falha consecutiva
+        # (10s → 30s → 60s por padrão). Evita martelar gateway sob pressão.
+        last_err = state.get("last_connect_error_at")
+        if last_err is not None:
+            errors = state.get("consecutive_connect_errors", 0)
+            err_cooldown = self._error_cooldown_for(errors)
+            if (time.time() - last_err) < err_cooldown:
                 return
 
         # Dado já coletado com este seq_num no ciclo atual
@@ -487,10 +590,10 @@ class ConnectionManager:
             with self._lock:
                 self._in_flight.discard(mac)
                 self._free_slot(mac)
-                # Permite re-enfileirar imediatamente no próximo scan event
                 st = self._sensor_state.get(mac)
                 if st:
                     st["last_seq_seen"] = None
+                self._record_connect_error(mac)
             self.stats.inc("connection_errors", 1)
             return
 
@@ -501,11 +604,15 @@ class ConnectionManager:
                 st = self._sensor_state.get(mac)
                 if st:
                     st["last_seq_seen"] = None
+                self._record_connect_error(mac)
                 jlog(SERVICE, "WARN", "connect_failed",
                      "Falha na conexão via Cassia API",
                      mac=mac, chip=chip, http_status=status, body=body[:200])
                 self.stats.inc("connection_errors", 1)
                 return
+
+        # Connect HTTP 2xx — MAC oficialmente "nosso" para próximo startup_cleanup
+        self._mark_paired(mac)
 
         jlog(SERVICE, "INFO", "connect_sent",
              "Conexão BLE estabelecida; iniciando setup GATT",
@@ -535,6 +642,7 @@ class ConnectionManager:
                 st = self._sensor_state.get(mac)
                 if st:
                     st["last_seq_seen"] = None
+                self._record_connect_error(mac)
             self.stats.inc("connection_errors", 1)
             return
 
@@ -566,6 +674,7 @@ class ConnectionManager:
                 state["pending_frames"] = candidate.get("pending_count", 1)
                 state["frames_received"] = 0
                 state["current_seq_num"] = seq_num
+            self._clear_connect_error(mac)
         self.stats.inc("connections_initiated", 1)
 
 
@@ -582,6 +691,9 @@ def connection_manager_loop(
     addr_type: str = "random",
     rssi_cache: dict = None,
     epoch_sync_path: str = "",
+    paired_macs_path: str = "",
+    error_cooldown_base: int = 10,
+    error_cooldown_max: int = 60,
 ):
     manager = ConnectionManager(
         gateway_api=gateway_api,
@@ -596,5 +708,8 @@ def connection_manager_loop(
         addr_type=addr_type,
         rssi_cache=rssi_cache,
         epoch_sync_path=epoch_sync_path,
+        paired_macs_path=paired_macs_path,
+        error_cooldown_base=error_cooldown_base,
+        error_cooldown_max=error_cooldown_max,
     )
     manager.run()
