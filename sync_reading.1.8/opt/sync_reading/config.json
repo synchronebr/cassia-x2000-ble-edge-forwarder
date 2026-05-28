@@ -27,6 +27,7 @@
   "max_open_assemblies": 200,
   "accel_sampling_time_ms": 200,
   "connection_retry_margin_seconds": 30,
+  "disconnect_delay_seconds": 2.0,
   "max_connections_per_chip": 20,
   "ble_addr_type": "random",
 

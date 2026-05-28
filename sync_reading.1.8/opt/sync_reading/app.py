@@ -7,7 +7,7 @@ import threading
 from queue import Queue, Full, Empty
 
 from lib.log import jlog, utc_now_iso
-from lib.config import load_cfg, get_int, get_str
+from lib.config import load_cfg, get_int, get_float, get_str
 from lib.http_client import post_json
 from lib.sse import sse_events, backoff_sleep
 from lib.spool import flush_spool_one_by_one
@@ -448,6 +448,7 @@ def main():
     gateway_http_concurrency = get_int(cfg, "gateway_http_concurrency", 6)
     connect_error_cooldown_base = get_int(cfg, "connect_error_cooldown_base_seconds", 10)
     connect_error_cooldown_max = get_int(cfg, "connect_error_cooldown_max_seconds", 60)
+    disconnect_delay_seconds = get_float(cfg, "disconnect_delay_seconds", 2.0)
 
     # Aplica o limite global de chamadas HTTP simultâneas ao gateway Cassia.
     # Reduz "gateway busy" quando vários sensores anunciam ao mesmo tempo.
@@ -583,6 +584,7 @@ def main():
             paired_macs_path=PAIRED_MACS,
             error_cooldown_base=connect_error_cooldown_base,
             error_cooldown_max=connect_error_cooldown_max,
+            disconnect_delay=disconnect_delay_seconds,
         ),
         daemon=True,
     )

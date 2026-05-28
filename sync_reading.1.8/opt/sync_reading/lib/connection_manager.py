@@ -48,6 +48,7 @@ class ConnectionManager:
         paired_macs_path: str = "",
         error_cooldown_base: int = 10,
         error_cooldown_max: int = 60,
+        disconnect_delay: float = 2.0,
     ):
         self.gateway_api = gateway_api
         self.scan_queue = scan_queue
@@ -62,6 +63,10 @@ class ConnectionManager:
         self.rssi_cache = rssi_cache if rssi_cache is not None else {}
         self.error_cooldown_base = max(1, int(error_cooldown_base))
         self.error_cooldown_max = max(self.error_cooldown_base, int(error_cooldown_max))
+        # Espera antes do teardown BLE: dá tempo do firmware receber o ACK
+        # link-layer do último frame (END) e disparar BLE_TX_DONE, evitando
+        # BLE_TX_ERROR_TIMEOUT no sensor. O slot já foi liberado antes.
+        self.disconnect_delay = max(0.0, float(disconnect_delay))
 
         self.cooldown_seconds = connect_timeout * 6  # ~30s padrão com timeout=5
         self._lock = threading.Lock()
@@ -446,12 +451,19 @@ class ConnectionManager:
         gw = self.gateway_api
         timeout = self.connect_timeout
 
+        delay = self.disconnect_delay
+
         def _do_disconnect(m=mac, c=chip, n=frames_received):
             try:
+                # Settle do último frame antes do teardown: evita que o
+                # firmware registre TX_TIMEOUT no END por desconexão precoce.
+                if delay > 0:
+                    time.sleep(delay)
                 status, _ = disconnect_device(gw, m, timeout=timeout)
                 jlog(SERVICE, "INFO", "disconnect_sent",
                      "Sensor desconectado após todos os frames coletados",
-                     mac=m, chip=c, frames_collected=n, http_status=status)
+                     mac=m, chip=c, frames_collected=n,
+                     settle_delay_s=delay, http_status=status)
             except Exception as e:
                 jlog(SERVICE, "WARN", "disconnect_error",
                      "Erro ao desconectar sensor", mac=m, chip=c, error=str(e))

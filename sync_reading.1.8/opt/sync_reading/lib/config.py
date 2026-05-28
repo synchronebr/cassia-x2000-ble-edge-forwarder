@@ -39,3 +39,10 @@ def get_int(cfg: Dict[str, Any], key: str, default: int) -> int:
         return int(cfg.get(key, default))
     except Exception:
         return default
+
+
+def get_float(cfg: Dict[str, Any], key: str, default: float) -> float:
+    try:
+        return float(cfg.get(key, default))
+    except Exception:
+        return default
