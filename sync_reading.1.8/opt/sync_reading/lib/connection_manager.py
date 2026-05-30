@@ -303,22 +303,30 @@ class ConnectionManager:
     def run(self):
         self._startup_cleanup()
         while not self.should_stop():
-            to_connect = []
-            with self._lock:
-                self._drain_scan_queue()
-                self._drain_tx_done_queue()
-                self._check_retry_timers()
-                to_connect = self._collect_connect_batch()
-                self.stats.set("connections_active", self._total_active())
+            # Blindagem: um erro pontual (adv malformado, estado inesperado) NÃO
+            # pode matar a thread — isso pararia o consumo do scan_queue e
+            # derrubaria todo o pipeline de leitura silenciosamente.
+            try:
+                to_connect = []
+                with self._lock:
+                    self._drain_scan_queue()
+                    self._drain_tx_done_queue()
+                    self._check_retry_timers()
+                    to_connect = self._collect_connect_batch()
+                    self.stats.set("connections_active", self._total_active())
 
-            # Spawnar threads fora do lock para não segurar enquanto cria thread
-            for candidate, chip in to_connect:
-                t = threading.Thread(
-                    target=self._connect_thread,
-                    args=(candidate, chip),
-                    daemon=True,
-                )
-                t.start()
+                # Spawnar threads fora do lock para não segurar enquanto cria thread
+                for candidate, chip in to_connect:
+                    t = threading.Thread(
+                        target=self._connect_thread,
+                        args=(candidate, chip),
+                        daemon=True,
+                    )
+                    t.start()
+            except Exception as e:
+                jlog(SERVICE, "ERROR", "manager_loop_error",
+                     "Erro no ciclo do connection manager; loop continua",
+                     error=str(e), error_type=type(e).__name__)
 
             time.sleep(0.05)
 
@@ -706,6 +714,7 @@ def connection_manager_loop(
     paired_macs_path: str = "",
     error_cooldown_base: int = 10,
     error_cooldown_max: int = 60,
+    disconnect_delay: float = 2.0,
 ):
     manager = ConnectionManager(
         gateway_api=gateway_api,
@@ -723,5 +732,6 @@ def connection_manager_loop(
         paired_macs_path=paired_macs_path,
         error_cooldown_base=error_cooldown_base,
         error_cooldown_max=error_cooldown_max,
+        disconnect_delay=disconnect_delay,
     )
     manager.run()
