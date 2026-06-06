@@ -6,7 +6,7 @@
 #   scripts/build.sh <qas|prd> [versao]
 #
 # Sem [versao], usa o conteúdo do arquivo VERSION na raiz do repo.
-# Gera: dist/sync_reading-<versao>-<env>.tar.gz
+# Gera: dist/sync_reading-<env>-<versao>.tar.gz
 #
 # Mescla config/config.base.json + config/config.<env>.json no config.json final.
 # O segredo (api_key) NÃO entra no pacote — fica em /root/config/sync_reading/config.json
@@ -63,7 +63,7 @@ PY
 
 # 5) Empacota
 mkdir -p "$DIST"
-OUT="$DIST/${APP}-${VERSION}-${ENV}.tar.gz"
+OUT="$DIST/${APP}-${ENV}-${VERSION}.tar.gz"
 tar -C "$STAGE" \
   --exclude='__pycache__' --exclude='*.pyc' --exclude='.DS_Store' \
   -czf "$OUT" "$APP"
