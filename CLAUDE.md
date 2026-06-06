@@ -25,9 +25,9 @@ folders and committed `.tar.gz` are gone; artifacts now live in GitHub Releases)
 
 ```
 src/                     # app.py, version.py, lib/  (the only source)
-config/                  # config.base.json + config.qa.json + config.prd.json (no secrets)
+config/                  # config.base.json + config.qas.json + config.prd.json (no secrets)
 packaging/               # autorun.sh, delete_app.sh
-scripts/build.sh         # build.sh <qa|prd> [version]
+scripts/build.sh         # build.sh <qas|prd> [version]
 VERSION                  # single source of truth for the version (e.g. 1.16.0)
 .github/workflows/release.yml
 dist/                    # build output (gitignored)
@@ -46,13 +46,13 @@ Environments (QA/PRD) differ ONLY by config. The build merges `config.base.json`
 with the env overlay and stamps the version:
 
 ```bash
-./scripts/build.sh qa            # uses version from VERSION file
+./scripts/build.sh qas           # uses version from VERSION file
 ./scripts/build.sh prd 1.16.0    # or pass an explicit version
 # -> dist/sync_reading-<version>-<env>.tar.gz
 ```
 
 For official releases: bump `VERSION`, commit, then tag `vX.Y.Z` and push the tag.
-GitHub Actions ([release.yml](.github/workflows/release.yml)) builds both qa+prd
+GitHub Actions ([release.yml](.github/workflows/release.yml)) builds both qas+prd
 tarballs and attaches them to the GitHub Release.
 
 ## Deploying to Gateway

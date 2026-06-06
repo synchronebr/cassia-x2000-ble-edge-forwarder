@@ -3,7 +3,7 @@
 # build.sh — empacota um release do sync_reading para um ambiente.
 #
 # Uso:
-#   scripts/build.sh <qa|prd> [versao]
+#   scripts/build.sh <qas|prd> [versao]
 #
 # Sem [versao], usa o conteúdo do arquivo VERSION na raiz do repo.
 # Gera: dist/sync_reading-<versao>-<env>.tar.gz
@@ -19,8 +19,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${2:-$(cat "$REPO_ROOT/VERSION")}"
 
 case "$ENV" in
-  qa|prd) ;;
-  *) echo "uso: $0 <qa|prd> [versao]" >&2; exit 2 ;;
+  qas|prd) ;;
+  *) echo "uso: $0 <qas|prd> [versao]" >&2; exit 2 ;;
 esac
 
 APP="sync_reading"

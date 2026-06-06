@@ -20,8 +20,8 @@ from lib.scan_reader import scan_reader_loop
 from lib.connection_manager import connection_manager_loop
 from lib.cassia_api import set_gateway_concurrency, get_busy_responses
 
-APP_NAME = "sync_reading"
-SERVICE = "sync_reading"
+APP_NAME = "sync_reading"            # caminhos: /opt/sync_reading, /root/config/sync_reading
+SERVICE = "sync_reading_{}".format(BUILD_ENV)   # identidade nos logs: sync_reading_qas / _prd / _dev
 
 BASE_DIR = os.environ.get("APP_BASE_DIR", "/opt/sync_reading")
 ENV_CFG = os.environ.get("APP_CONFIG")

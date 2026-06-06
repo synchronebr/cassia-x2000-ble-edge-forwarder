@@ -17,9 +17,9 @@ Sensores BLE → Gateway Cassia X2000 → [este serviço] → Backend Cloud (HTT
 
 ```
 src/                  app.py, version.py, lib/
-config/               config.base.json + config.qa.json + config.prd.json   (sem segredo)
+config/               config.base.json + config.qas.json + config.prd.json   (sem segredo)
 packaging/            autorun.sh, delete_app.sh
-scripts/build.sh      build.sh <qa|prd> [versão]
+scripts/build.sh      build.sh <qas|prd> [versão]
 VERSION               fonte única da versão (ex.: 1.16.0)
 dist/                 saída do build (ignorada pelo git)
 ```
@@ -40,11 +40,14 @@ O build mescla `config/config.base.json` + `config/config.<env>.json`, carimba a
 versão (do arquivo `VERSION` ou do argumento) e gera o tarball em `dist/`.
 
 ```bash
-./scripts/build.sh qa             # usa a versão do arquivo VERSION
+./scripts/build.sh qas            # usa a versão do arquivo VERSION
 ./scripts/build.sh prd 1.16.0     # ou passa a versão explícita
-# → dist/sync_reading-1.16.0-qa.tar.gz
+# → dist/sync_reading-1.16.0-qas.tar.gz
 # → dist/sync_reading-1.16.0-prd.tar.gz
 ```
+
+Cada ambiente carimba a versão e marca o nome nos logs (`service`):
+`sync_reading_qas` / `sync_reading_prd` (e `sync_reading_dev` rodando do fonte).
 
 > ⚠️ Não use mais `tar -zcvf ...` na mão. O `build.sh` garante config correta por
 > ambiente, exclui lixo (`__pycache__`, logs) e carimba a versão.
@@ -66,10 +69,10 @@ git push origin main --tags
 ```
 
 A tag `v*` dispara o GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)),
-que builda **qa + prd** e anexa os dois `.tar.gz` ao **GitHub Release**. Esse é o
+que builda **qas + prd** e anexa os dois `.tar.gz` ao **GitHub Release**. Esse é o
 artefato imutável e rastreável (release = tag = commit = artefato).
 
-> Dia a dia/QA: rode `./scripts/build.sh qa` local e teste. Só crie tag para promover.
+> Dia a dia/QA: rode `./scripts/build.sh qas` local e teste. Só crie tag para promover.
 
 ---
 
