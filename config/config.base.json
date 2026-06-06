@@ -1,0 +1,42 @@
+{
+  "gateway_api_base": "http://10.10.10.254",
+
+  "sse_path": "/gatt/nodes?event=1",
+  "scan_path": "/gap/nodes?event=1&filter_name=Sync&filter_duplicates=0&filter_rssi=-90",
+
+  "cloud_ingest_path": "/sensors/cassia",
+
+  "api_key": "",
+  "api_key_header": "X-API-Key",
+
+  "timeout_seconds": 5,
+  "connect_timeout_seconds": 5,
+  "flush_interval_seconds": 1,
+  "metrics_interval_seconds": 5,
+
+  "spool_max_mb": 20,
+  "spool_write_batch_size": 100,
+  "spool_write_batch_wait_ms": 200,
+
+  "packet_queue_max": 20000,
+  "outbound_queue_max": 5000,
+  "scan_queue_max": 1000,
+
+  "assembly_timeout_seconds": 3,
+  "max_open_assemblies": 200,
+  "accel_sampling_time_ms": 200,
+  "connection_retry_margin_seconds": 30,
+  "disconnect_delay_seconds": 2.0,
+  "max_connections_per_chip": 20,
+  "ble_addr_type": "random",
+
+  "gateway_http_concurrency": 6,
+  "connect_error_cooldown_base_seconds": 10,
+  "connect_error_cooldown_max_seconds": 60,
+
+  "capture_progress_every": 5000,
+  "assembly_progress_every": 100,
+
+  "cassia_info_enabled": 1,
+  "cassia_info_required": 0
+}

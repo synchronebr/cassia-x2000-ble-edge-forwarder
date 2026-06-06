@@ -18,23 +18,53 @@ Cloud Backend (Go)
 
 The Python edge service is responsible for: receiving BLE packet events, reassembling fragmented multi-packet frames, decoding sensor payloads, persisting events to disk, and forwarding complete sensor readings to the Go cloud backend.
 
+## Repo Layout
+
+Single source tree — version is a git tag, NOT a folder name (legacy `sync_reading.1.X/`
+folders and committed `.tar.gz` are gone; artifacts now live in GitHub Releases).
+
+```
+src/                     # app.py, version.py, lib/  (the only source)
+config/                  # config.base.json + config.qa.json + config.prd.json (no secrets)
+packaging/               # autorun.sh, delete_app.sh
+scripts/build.sh         # build.sh <qa|prd> [version]
+VERSION                  # single source of truth for the version (e.g. 1.16.0)
+.github/workflows/release.yml
+dist/                    # build output (gitignored)
+```
+
 ## Running the Application
 
 ```bash
 # Run locally (no pip dependencies — Python 3 stdlib only)
-cd sync_reading.1.7/opt/sync_reading
-python3 app.py
-
-# Package a release
-tar -zcvf sync_reading.1.X.tar.gz sync_reading.1.X/
+cd src && python3 app.py
 ```
+
+## Building a Release
+
+Environments (QA/PRD) differ ONLY by config. The build merges `config.base.json`
+with the env overlay and stamps the version:
+
+```bash
+./scripts/build.sh qa            # uses version from VERSION file
+./scripts/build.sh prd 1.16.0    # or pass an explicit version
+# -> dist/sync_reading-<version>-<env>.tar.gz
+```
+
+For official releases: bump `VERSION`, commit, then tag `vX.Y.Z` and push the tag.
+GitHub Actions ([release.yml](.github/workflows/release.yml)) builds both qa+prd
+tarballs and attaches them to the GitHub Release.
 
 ## Deploying to Gateway
 
-1. Copy the `.tar.gz` to the Cassia X2000 gateway
+1. Copy the env-specific `.tar.gz` (from `dist/` or a GitHub Release) to the gateway
 2. Access via: Gateway UI > Container > Container Operation > Remote Login
    - Login: `cassia` / Pass: `cassia-XXXXXX` (last 6 chars of gateway MAC, e.g. `cassia-e59684`)
 3. Extract and start `autorun.sh` — it acts as the process supervisor with auto-restart and log rotation
+4. **API key (one-time per gateway)**: create `/root/config/sync_reading/config.json`
+   with `{"api_key": "..."}`. `lib/config.py` merges it over the packaged config at
+   runtime, so the secret never ships in a tarball and survives every upgrade.
+   The running version + env are logged at boot (`app_version`, `build_env`).
 
 ## Viewing Logs on Gateway
 
@@ -47,7 +77,7 @@ Logs are **JSONL** (one JSON object per line). `autorun.sh` rotates at 5MB, keep
 
 ## Configuration
 
-`sync_reading.1.7/opt/sync_reading/config.json`:
+Config keys (split across `config/config.base.json` + `config/config.<env>.json`, merged at build time):
 
 | Field | Description |
 |-------|-------------|
@@ -81,19 +111,19 @@ Gateway SSE stream (GATT notifications)
                                                 [Metrics logger every 5s]
 ```
 
-**SSE Reader** ([lib/sse.py](sync_reading.1.7/opt/sync_reading/lib/sse.py)): Connects to gateway SSE endpoint, parses GATT notification events, extracts device MAC, AP MAC, and hex-encoded payload value. Reconnects with exponential backoff capped at 30s.
+**SSE Reader** ([lib/sse.py](src/lib/sse.py)): Connects to gateway SSE endpoint, parses GATT notification events, extracts device MAC, AP MAC, and hex-encoded payload value. Reconnects with exponential backoff capped at 30s.
 
-**Assembler** ([lib/assembly.py](sync_reading.1.7/opt/sync_reading/lib/assembly.py)): Groups fragmented packets by `{device}:{timestamp_bucket}:{packet_id}`. A valid frame requires START + TIMESTAMP + sensor data packets + END. Times out incomplete assemblies; produces error events with diagnostics (missing packet list, bytes received, assembly age).
+**Assembler** ([lib/assembly.py](src/lib/assembly.py)): Groups fragmented packets by `{device}:{timestamp_bucket}:{packet_id}`. A valid frame requires START + TIMESTAMP + sensor data packets + END. Times out incomplete assemblies; produces error events with diagnostics (missing packet list, bytes received, assembly age).
 
-**BLE Packet Parser** ([lib/ble_packet.py](sync_reading.1.7/opt/sync_reading/lib/ble_packet.py)): Decodes hex payloads into structured sensor readings. Handles all 7 packet types (see protocol below).
+**BLE Packet Parser** ([lib/ble_packet.py](src/lib/ble_packet.py)): Decodes hex payloads into structured sensor readings. Handles all 7 packet types (see protocol below).
 
-**Spool** ([lib/spool.py](sync_reading.1.7/opt/sync_reading/lib/spool.py)): File-based JSONL queue at `/opt/sync_reading/spool/events_pending.jsonl`. Atomic writes via `os.replace()`. Drops oldest events when `spool_max_mb` is exceeded.
+**Spool** ([lib/spool.py](src/lib/spool.py)): File-based JSONL queue at `/opt/sync_reading/spool/events_pending.jsonl`. Atomic writes via `os.replace()`. Drops oldest events when `spool_max_mb` is exceeded.
 
-**Cloud Sender** ([lib/http_client.py](sync_reading.1.7/opt/sync_reading/lib/http_client.py)): POSTs events one-by-one to the Go backend. Re-queues failed items back into spool.
+**Cloud Sender** ([lib/http_client.py](src/lib/http_client.py)): POSTs events one-by-one to the Go backend. Re-queues failed items back into spool.
 
-**Gateway Identity** ([lib/cassia_info.py](sync_reading.1.7/opt/sync_reading/lib/cassia_info.py)): Fetches gateway MAC, IP, model, firmware at startup via gateway REST API.
+**Gateway Identity** ([lib/cassia_info.py](src/lib/cassia_info.py)): Fetches gateway MAC, IP, model, firmware at startup via gateway REST API.
 
-**RSSI** ([lib/rssi.py](sync_reading.1.7/opt/sync_reading/lib/rssi.py)): Thread-safe cache tracking per-device signal strength from `/gap/rssi`.
+**RSSI** ([lib/rssi.py](src/lib/rssi.py)): Thread-safe cache tracking per-device signal strength from `/gap/rssi`.
 
 ## BLE Packet Protocol
 
@@ -150,7 +180,8 @@ The firmware also sends 4-byte integer log codes over a separate BLE characteris
 
 ## Active Development Directory
 
-`sync_reading.1.7/` is the current working source. The `.tar.gz` files are release snapshots — do not edit them. There is no formal test suite; validation is done against real Cassia X2000 hardware.
+`src/` is the only working source. Build with `scripts/build.sh`; never hand-edit a
+`.tar.gz`. There is no formal test suite; validation is done against real Cassia X2000 hardware.
 
 When working on payload parsing or assembly logic, keep in mind:
 - All multi-byte integers are **little-endian** unless noted otherwise

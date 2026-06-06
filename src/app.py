@@ -6,6 +6,7 @@ import signal
 import threading
 from queue import Queue, Full, Empty
 
+from version import __version__ as APP_VERSION, BUILD_ENV
 from lib.log import jlog, utc_now_iso
 from lib.config import load_cfg, get_int, get_float, get_str
 from lib.http_client import post_json
@@ -531,6 +532,8 @@ def main():
         "INFO",
         "boot",
         "Aplicação iniciando em modo on-demand: scan+connect+gatt+assembler+spool+sender",
+        app_version=APP_VERSION,
+        build_env=BUILD_ENV,
         base_dir=BASE_DIR,
         cfg_path=cfg_path,
         scan_url=scan_url,

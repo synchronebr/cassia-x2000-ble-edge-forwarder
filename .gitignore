@@ -1,0 +1,20 @@
+# Artefatos de build (gerados por scripts/build.sh / CI — nunca versionar)
+/dist/
+*.tar.gz
+
+# Python
+__pycache__/
+*.pyc
+
+# Runtime do app (não versionar dados do gateway)
+logs/
+spool/
+run/
+epoch_sync.json
+paired_macs.json
+
+# macOS
+.DS_Store
+
+# Segredo local (caso alguém crie um durante testes)
+config/config.local.json

@@ -1,0 +1,40 @@
+name: release
+
+# Dispara ao criar uma tag de versão, ex.: v1.16.0
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derivar versão da tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Conferir que a tag bate com o arquivo VERSION
+        run: |
+          file_ver="$(cat VERSION)"
+          if [ "$file_ver" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "::error::tag ${{ steps.ver.outputs.version }} != VERSION ($file_ver). Atualize o arquivo VERSION antes de taggear."
+            exit 1
+          fi
+
+      - name: Build QA + PRD
+        run: |
+          chmod +x scripts/build.sh
+          ./scripts/build.sh qa "${{ steps.ver.outputs.version }}"
+          ./scripts/build.sh prd "${{ steps.ver.outputs.version }}"
+
+      - name: Publicar release com os dois tarballs
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true
