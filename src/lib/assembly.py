@@ -14,12 +14,14 @@ from lib.ble_packet import (
     BLE_TX_SENSOR_STTS22H,
     BLE_TX_SENSOR_IMP23ABSU,
     BLE_TX_SENSOR_BATTERY_MANAGER,
+    BLE_TX_SAMPLE_REASON,
     BLE_TX_CRC32,
     BLE_TX_END_MESSAGE,
     SENSOR_PACKET_IDS,
     packet_type_name,
     decode_sensor_payload,
     decode_battery_manager_payload,
+    decode_sample_reason_payload,
     try_parse_timestamp_payload,
     epoch_from_timestamp_payload,
 )
@@ -57,6 +59,7 @@ class ReadingAssembly:
     crc32_packet_no: Optional[int] = None
     end_packet_no: Optional[int] = None
     battery_packet_no: Optional[int] = None
+    sample_reason_packet_no: Optional[int] = None
 
     start_payload: Optional[bytes] = None
     timestamp_payload: Optional[bytes] = None
@@ -64,6 +67,8 @@ class ReadingAssembly:
     end_payload: Optional[bytes] = None
     # battery_manager (firmware v7): pacote opcional — só presente quando há ciclo concluído
     battery_payload: Optional[bytes] = None
+    # sample_reason (firmware v8): pacote opcional (1 byte) — motivo da amostra atual
+    sample_reason_payload: Optional[bytes] = None
 
     bytes_received: int = 0
     last_packet_no: Optional[int] = None
@@ -143,6 +148,13 @@ class ReadingAssembly:
                 return False, "duplicate_battery_packet"
             self.battery_packet_no = packet_no
             self.battery_payload = payload
+
+        elif packet_id == BLE_TX_SAMPLE_REASON:
+            # firmware v8: opcional — 1 byte com o motivo da amostra
+            if self.sample_reason_packet_no is not None:
+                return False, "duplicate_sample_reason_packet"
+            self.sample_reason_packet_no = packet_no
+            self.sample_reason_payload = payload
 
         elif packet_id in SENSOR_PACKET_IDS:
             prev_total = self.sensor_expected_totals.get(packet_id)
@@ -282,6 +294,8 @@ class ReadingAssembly:
             total += 1
         if self.battery_payload is not None:
             total += 1
+        if self.sample_reason_payload is not None:
+            total += 1
 
         for sensor_id, total_packets in self.sensor_expected_totals.items():
             if sensor_id in self.sensor_parts:
@@ -299,6 +313,7 @@ class ReadingAssembly:
             (BLE_TX_CRC32,         self.crc32_packet_no,   self.crc32_payload),
             (BLE_TX_END_MESSAGE,   self.end_packet_no,     self.end_payload),
             (BLE_TX_SENSOR_BATTERY_MANAGER, self.battery_packet_no, self.battery_payload),
+            (BLE_TX_SAMPLE_REASON, self.sample_reason_packet_no, self.sample_reason_payload),
         ]:
             if special_pn is not None:
                 out.append(
@@ -362,6 +377,8 @@ def find_matching_assembly(assemblies, device_assemblies, device, pkt, received_
             continue
         if packet_id == BLE_TX_SENSOR_BATTERY_MANAGER and asm.battery_payload is not None:
             continue
+        if packet_id == BLE_TX_SAMPLE_REASON and asm.sample_reason_payload is not None:
+            continue
 
         # pacote já presente
         if (packet_id, packet_no) in asm.packets:
@@ -371,11 +388,12 @@ def find_matching_assembly(assemblies, device_assemblies, device, pkt, received_
         if packet_id == BLE_TX_START_MESSAGE and asm.start_payload is not None:
             continue
 
-        # timestamp, sensor e battery só entram em assembly que já começou e ainda não fechou
+        # timestamp, sensor, battery e sample_reason só entram em assembly que já começou e ainda não fechou
         if (
             packet_id in SENSOR_PACKET_IDS
             or packet_id == BLE_TX_TIMESTAMP
             or packet_id == BLE_TX_SENSOR_BATTERY_MANAGER
+            or packet_id == BLE_TX_SAMPLE_REASON
         ):
             if asm.start_payload is None or asm.end_payload is not None:
                 continue
@@ -481,6 +499,20 @@ def build_success_event(assembly, accel_sampling_time_ms=200, rssi=None):
                 "WARN",
                 "battery_manager_decode_failed",
                 "Falha ao decodificar pacote de bateria: %s" % exc,
+            )
+
+    # sample_reason (firmware v8): opcional — motivo da amostra (periódica/solicitação/interrupção)
+    if assembly.sample_reason_payload is not None:
+        try:
+            event["sampleReason"] = decode_sample_reason_payload(
+                assembly.sample_reason_payload
+            )["reason"]
+        except ValueError as exc:
+            jlog(
+                SERVICE,
+                "WARN",
+                "sample_reason_decode_failed",
+                "Falha ao decodificar pacote de motivo da amostra: %s" % exc,
             )
 
     return event

@@ -12,8 +12,9 @@ BLE_TX_SENSOR_IIS2MDC  = 3
 BLE_TX_SENSOR_STTS22H  = 4
 BLE_TX_SENSOR_IMP23ABSU = 5
 BLE_TX_SENSOR_BATTERY_MANAGER = 6   # firmware v7: pacote opcional de saúde de bateria (16 bytes)
-BLE_TX_CRC32           = 7   # firmware v7: era 6, agora 7 (deslocado pelo battery_manager)
-BLE_TX_END_MESSAGE     = 8   # firmware v7: era 7, agora 8
+BLE_TX_SAMPLE_REASON   = 7   # firmware v8: motivo da amostra (1 byte) — periódica/solicitação/interrupção
+BLE_TX_CRC32           = 99  # firmware v8: era 7, agora 99 (deslocado pelo sample_reason)
+BLE_TX_END_MESSAGE     = 100 # firmware v8: era 8, agora 100
 
 PACKET_TYPE_NAMES = {
     BLE_TX_START_MESSAGE:    "start",
@@ -23,6 +24,7 @@ PACKET_TYPE_NAMES = {
     BLE_TX_SENSOR_STTS22H:   "sensor_stts22h",
     BLE_TX_SENSOR_IMP23ABSU: "sensor_imp23absu",
     BLE_TX_SENSOR_BATTERY_MANAGER: "battery_manager",
+    BLE_TX_SAMPLE_REASON:    "sample_reason",
     BLE_TX_CRC32:            "crc32",
     BLE_TX_END_MESSAGE:      "end",
 }
@@ -314,6 +316,24 @@ def decode_battery_manager_payload(payload_bytes: bytes) -> Dict[str, Any]:
         "requestedBattery":      payload_bytes[12],
         "statusBattery":         payload_bytes[13],
         "event":                 payload_bytes[14],
+    }
+
+
+def decode_sample_reason_payload(payload_bytes: bytes) -> Dict[str, Any]:
+    """
+    SAMPLE_REASON (firmware v8): 1 byte com o motivo da amostra (SampleTrigger_t).
+
+      0  NONE       (fallback após limpeza interna)
+      1  PERIODIC   (timer de hibernação)
+      2  REQUEST    (escrita 0x00 em DATA/REQUEST)
+      3  INTERRUPT  (wake-up por vibração do LIS2DW12)
+    """
+    if payload_bytes is None or len(payload_bytes) == 0:
+        raise ValueError("sample_reason_payload_empty")
+
+    return {
+        "sensorId": BLE_TX_SAMPLE_REASON,
+        "reason": payload_bytes[0],
     }
 
 
