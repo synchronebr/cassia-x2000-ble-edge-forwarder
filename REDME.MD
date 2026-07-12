@@ -81,7 +81,8 @@ artefato imutável e rastreável (release = tag = commit = artefato).
 Acesse: **Gateway UI > Container > Container Operation > Remote Login**
 - Login: `cassia`
 - Senha: `cassia-XXXXXX` (últimos 6 do MAC, ex.: `cassia-e59684`)
-
+cassia-e5c890
+cassia-e5bbb4
 Ou por SSH:
 ```bash
 ssh -p 20022 cassia@<IP_DO_GATEWAY>

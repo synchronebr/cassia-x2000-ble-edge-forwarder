@@ -225,8 +225,22 @@ class ConnectionManager:
     def _has_free_slot(self) -> bool:
         return any(c < self.max_per_chip for c in self._chip_count)
 
-    def _alloc_slot(self, mac: str):
-        """Aloca slot no chip com menos conexões. Retorna chip index ou None."""
+    def _alloc_slot(self, mac: str, preferred=None):
+        """
+        Aloca slot para o mac. Se `preferred` (o chip que escaneou o device) for
+        informado e tiver vaga, usa ELE — conectar no mesmo chip que viu o anúncio
+        evita o erro "device can not scan" do gateway. Caso contrário, cai no chip
+        com menos conexões. Retorna chip index ou None (todos cheios).
+        """
+        if (
+            preferred is not None
+            and 0 <= preferred < NUM_CHIPS
+            and self._chip_count[preferred] < self.max_per_chip
+        ):
+            self._chip_count[preferred] += 1
+            self._mac_to_chip[mac] = preferred
+            return preferred
+
         best_chip = None
         best_count = self.max_per_chip + 1
         for i, count in enumerate(self._chip_count):
@@ -409,6 +423,7 @@ class ConnectionManager:
                     "rssi": rssi if rssi is not None else -100,
                     "uid": parsed.get("uid"),
                     "addr_type": evt.get("addr_type", self.addr_type),
+                    "scan_chip": evt.get("chip"),
                 })
                 self._connect_queue.sort(
                     key=lambda c: (c["pending_count"], c["rssi"]),
@@ -556,7 +571,8 @@ class ConnectionManager:
             if state["last_seq_collected"] is not None and state["last_seq_collected"] == seq_num:
                 continue
 
-            chip = self._alloc_slot(mac)
+            # Preferir o chip que escaneou o device (evita "device can not scan")
+            chip = self._alloc_slot(mac, preferred=candidate.get("scan_chip"))
             if chip is None:
                 # Todos os chips cheios: devolver candidato e parar
                 self._connect_queue.insert(0, candidate)
@@ -679,6 +695,7 @@ class ConnectionManager:
                         "rssi": candidate.get("rssi", -100),
                         "uid": candidate.get("uid"),
                         "addr_type": candidate.get("addr_type", self.addr_type),
+                        "scan_chip": candidate.get("scan_chip"),
                     })
             self.stats.inc("connection_retries", 1)
             return
