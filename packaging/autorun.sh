@@ -23,21 +23,35 @@ log() {
   echo "$line" >&2
 }
 
+MAX_LOG_BYTES=5242880      # rotaciona ao atingir 5 MB
+KEEP_LOGS=6                # mantém app.log.1 .. app.log.6
+ROTATE_INTERVAL=30         # checa o tamanho a cada 30s enquanto o app roda
+
 rotate_log() {
-  MAX=5242880
+  # IMPORTANTE: o app escreve no $LOG via redirecionamento `>> "$LOG"` (append),
+  # então o processo mantém o fd aberto. Um `mv` NÃO interrompe a escrita — o
+  # Python seguiria gravando no inode renomeado e o app.log "novo" nunca cresceria.
+  # Por isso usamos copytruncate: copia o conteúdo para .1 e ZERA o arquivo no
+  # lugar. Como o redirecionamento é append (O_APPEND), a próxima escrita volta
+  # ao offset 0 — sem buracos/sparse. Funciona com o app vivo OU entre restarts.
   [ -f "$LOG" ] || return 0
   SIZE=$(wc -c < "$LOG" 2>/dev/null || echo 0)
-  if [ "$SIZE" -ge "$MAX" ]; then
-    i=5
-    while [ $i -ge 1 ]; do
-      [ -f "$LOG.$i" ] && mv "$LOG.$i" "$LOG.$((i+1))" 2>/dev/null || true
-      i=$((i-1))
-    done
-    mv "$LOG" "$LOG.1" 2>/dev/null || true
-  fi
+  [ "$SIZE" -ge "$MAX_LOG_BYTES" ] || return 0
+
+  i=$((KEEP_LOGS - 1))
+  while [ $i -ge 1 ]; do
+    [ -f "$LOG.$i" ] && mv "$LOG.$i" "$LOG.$((i+1))" 2>/dev/null || true
+    i=$((i-1))
+  done
+  cp "$LOG" "$LOG.1" 2>/dev/null || true
+  : > "$LOG"
 }
 
 cleanup() {
+  # encerra o rotador em background, se estiver rodando
+  if [ -n "${ROTATOR_PID:-}" ] && kill -0 "$ROTATOR_PID" 2>/dev/null; then
+    kill "$ROTATOR_PID" 2>/dev/null || true
+  fi
   rotate_log
   log "signal received; stopping child..."
   if [ -f "$PIDFILE" ]; then
@@ -91,6 +105,17 @@ export APP_CONFIG="${APP_CONFIG:-$BASE/config.json}"
 rotate_log
 log "==== START ===="
 ( whoami; pwd; ls -l "$BASE" ) >> "$LOG" 2>&1 || true
+
+# rotador em background: enquanto o supervisor (este PID) estiver vivo, checa o
+# tamanho do log periodicamente e rotaciona via copytruncate. É isso que evita o
+# app.log crescer a centenas de MB quando o app fica de pé por semanas sem cair.
+SUPERVISOR_PID=$$
+( while kill -0 "$SUPERVISOR_PID" 2>/dev/null; do
+    rotate_log
+    sleep "$ROTATE_INTERVAL"
+  done ) &
+ROTATOR_PID=$!
+log "log rotator started (pid=$ROTATOR_PID, max=${MAX_LOG_BYTES}B, keep=$KEEP_LOGS, every=${ROTATE_INTERVAL}s)"
 
 # supervisão: reinicia se cair
 attempt=0

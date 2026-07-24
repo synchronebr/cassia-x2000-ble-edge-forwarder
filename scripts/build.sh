@@ -3,10 +3,11 @@
 # build.sh — empacota um release do sync_reading para um ambiente.
 #
 # Uso:
-#   scripts/build.sh <qa|prd> [versao]
+#   scripts/build.sh <qas|prd> [versao]
 #
 # Sem [versao], usa o conteúdo do arquivo VERSION na raiz do repo.
-# Gera: dist/sync_reading-<versao>-<env>.tar.gz
+# Gera: dist/sync_reading_<env>.<versao>.tar.gz
+# (formato exigido pelo "Add APP" do Cassia: nome.versao com PONTO, sem traço)
 #
 # Mescla config/config.base.json + config/config.<env>.json no config.json final.
 # O segredo (api_key) NÃO entra no pacote — fica em /root/config/sync_reading/config.json
@@ -19,8 +20,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${2:-$(cat "$REPO_ROOT/VERSION")}"
 
 case "$ENV" in
-  qa|prd) ;;
-  *) echo "uso: $0 <qa|prd> [versao]" >&2; exit 2 ;;
+  qas|prd) ;;
+  *) echo "uso: $0 <qas|prd> [versao]" >&2; exit 2 ;;
 esac
 
 APP="sync_reading"
@@ -63,7 +64,7 @@ PY
 
 # 5) Empacota
 mkdir -p "$DIST"
-OUT="$DIST/${APP}-${VERSION}-${ENV}.tar.gz"
+OUT="$DIST/${APP}_${ENV}.${VERSION}.tar.gz"
 tar -C "$STAGE" \
   --exclude='__pycache__' --exclude='*.pyc' --exclude='.DS_Store' \
   -czf "$OUT" "$APP"

@@ -20,8 +20,8 @@ from lib.scan_reader import scan_reader_loop
 from lib.connection_manager import connection_manager_loop
 from lib.cassia_api import set_gateway_concurrency, get_busy_responses
 
-APP_NAME = "sync_reading"
-SERVICE = "sync_reading"
+APP_NAME = "sync_reading"            # caminhos: /opt/sync_reading, /root/config/sync_reading
+SERVICE = "sync_reading_{}".format(BUILD_ENV)   # identidade nos logs: sync_reading_qas / _prd / _dev
 
 BASE_DIR = os.environ.get("APP_BASE_DIR", "/opt/sync_reading")
 ENV_CFG = os.environ.get("APP_CONFIG")
@@ -74,6 +74,7 @@ class Stats:
         self.assemblies_evicted = 0
         self.assemblies_invalid = 0
         self.duplicate_packets = 0
+        self.duplicate_readings_suppressed = 0
         self.completed_samples = 0
         self.completed_payload_bytes = 0
         self.max_assembly_age_ms = 0
@@ -185,6 +186,7 @@ class Stats:
                 "assemblies_evicted": self.assemblies_evicted,
                 "assemblies_invalid": self.assemblies_invalid,
                 "duplicate_packets": self.duplicate_packets,
+                "duplicate_readings_suppressed": self.duplicate_readings_suppressed,
                 "completed_samples": self.completed_samples,
                 "completed_payload_bytes": self.completed_payload_bytes,
                 "max_assembly_age_ms": self.max_assembly_age_ms,
@@ -374,6 +376,7 @@ def metrics_loop(stats, packet_queue, outbound_queue, scan_queue, interval_secon
             assemblies_evicted=snap["assemblies_evicted"],
             assemblies_invalid=snap["assemblies_invalid"],
             duplicate_packets=snap["duplicate_packets"],
+            duplicate_readings_suppressed=snap["duplicate_readings_suppressed"],
             completed_samples=snap["completed_samples"],
             completed_payload_bytes=snap["completed_payload_bytes"],
             outbound_enqueued=snap["outbound_enqueued"],
@@ -439,6 +442,12 @@ def main():
     assembly_timeout_seconds = get_int(cfg, "assembly_timeout_seconds", 3)
     max_open_assemblies = get_int(cfg, "max_open_assemblies", 2000)
     accel_sampling_time_ms = get_int(cfg, "accel_sampling_time_ms", 200)
+
+    # Dedup de reenvio de leitura idêntica (frame armazenado re-coletado).
+    # dedup_enabled=0 desliga por completo; janela em segundos deve ser maior
+    # que a cadência do loop de reconexão (~30-60s) para cobri-lo com folga.
+    dedup_enabled = get_int(cfg, "dedup_enabled", 1)
+    dedup_window_seconds = get_int(cfg, "dedup_window_seconds", 600)
 
     scan_queue_max = get_int(cfg, "scan_queue_max", 1000)
     connect_timeout_seconds = get_int(cfg, "connect_timeout_seconds", timeout)
@@ -549,6 +558,8 @@ def main():
         scan_queue_max=scan_queue_max,
         assembly_timeout_seconds=assembly_timeout_seconds,
         max_open_assemblies=max_open_assemblies,
+        dedup_enabled=bool(dedup_enabled),
+        dedup_window_seconds=dedup_window_seconds,
         connect_timeout_seconds=connect_timeout_seconds,
         connection_retry_margin_seconds=connection_retry_margin_seconds,
         max_connections_per_chip=max_connections_per_chip,
@@ -606,6 +617,8 @@ def main():
             tx_done_queue,
             accel_sampling_time_ms,
             rssi_cache,
+            bool(dedup_enabled),
+            dedup_window_seconds,
         ),
         daemon=True,
     )
@@ -840,6 +853,7 @@ def main():
         assemblies_evicted=snap["assemblies_evicted"],
         assemblies_invalid=snap["assemblies_invalid"],
         duplicate_packets=snap["duplicate_packets"],
+        duplicate_readings_suppressed=snap["duplicate_readings_suppressed"],
         completed_samples=snap["completed_samples"],
         outbound_enqueued=snap["outbound_enqueued"],
         outbound_queue_full_drops=snap["outbound_queue_full_drops"],

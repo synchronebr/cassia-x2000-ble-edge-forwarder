@@ -23,6 +23,7 @@ def scan_reader_loop(scan_url: str, scan_queue, stats, should_stop):
         "rssi":     -65,                    # int ou None
         "adv_data": "020106...",            # hex string
         "ap":       "...",
+        "chip":     0,                      # chipId que recebeu o anúncio (int ou None)
       }
     """
     attempt = 0
@@ -95,6 +96,16 @@ def scan_reader_loop(scan_url: str, scan_queue, stats, should_stop):
 
                 ap = evt.get("ap") or ""
 
+                # chipId indica em qual rádio/chip do gateway o anúncio foi recebido.
+                # É essencial para conectar NO MESMO chip que escaneou o device:
+                # conectar em outro chip faz o Cassia responder "device can not scan".
+                chip = evt.get("chipId")
+                if chip is not None:
+                    try:
+                        chip = int(chip)
+                    except Exception:
+                        chip = None
+
                 addr_type = "random"
                 bdaddrs = evt.get("bdaddrs")
                 if bdaddrs and isinstance(bdaddrs, list) and bdaddrs[0]:
@@ -108,6 +119,7 @@ def scan_reader_loop(scan_url: str, scan_queue, stats, should_stop):
                     "adv_data": adv_data,
                     "ap": ap,
                     "addr_type": addr_type,
+                    "chip": chip,
                 }
 
                 try:

@@ -13,11 +13,15 @@ from lib.ble_packet import (
     BLE_TX_SENSOR_IIS2MDC,
     BLE_TX_SENSOR_STTS22H,
     BLE_TX_SENSOR_IMP23ABSU,
+    BLE_TX_SENSOR_BATTERY_MANAGER,
+    BLE_TX_SAMPLE_REASON,
     BLE_TX_CRC32,
     BLE_TX_END_MESSAGE,
     SENSOR_PACKET_IDS,
     packet_type_name,
     decode_sensor_payload,
+    decode_battery_manager_payload,
+    decode_sample_reason_payload,
     try_parse_timestamp_payload,
     epoch_from_timestamp_payload,
 )
@@ -54,11 +58,17 @@ class ReadingAssembly:
     timestamp_packet_no: Optional[int] = None
     crc32_packet_no: Optional[int] = None
     end_packet_no: Optional[int] = None
+    battery_packet_no: Optional[int] = None
+    sample_reason_packet_no: Optional[int] = None
 
     start_payload: Optional[bytes] = None
     timestamp_payload: Optional[bytes] = None
     crc32_payload: Optional[bytes] = None
     end_payload: Optional[bytes] = None
+    # battery_manager (firmware v7): pacote opcional — só presente quando há ciclo concluído
+    battery_payload: Optional[bytes] = None
+    # sample_reason (firmware v8): pacote opcional (1 byte) — motivo da amostra atual
+    sample_reason_payload: Optional[bytes] = None
 
     bytes_received: int = 0
     last_packet_no: Optional[int] = None
@@ -131,6 +141,20 @@ class ReadingAssembly:
                 return False, "duplicate_end_packet"
             self.end_packet_no = packet_no
             self.end_payload = payload
+
+        elif packet_id == BLE_TX_SENSOR_BATTERY_MANAGER:
+            # opcional: presente só quando o firmware conclui um ciclo de bateria
+            if self.battery_packet_no is not None:
+                return False, "duplicate_battery_packet"
+            self.battery_packet_no = packet_no
+            self.battery_payload = payload
+
+        elif packet_id == BLE_TX_SAMPLE_REASON:
+            # firmware v8: opcional — 1 byte com o motivo da amostra
+            if self.sample_reason_packet_no is not None:
+                return False, "duplicate_sample_reason_packet"
+            self.sample_reason_packet_no = packet_no
+            self.sample_reason_payload = payload
 
         elif packet_id in SENSOR_PACKET_IDS:
             prev_total = self.sensor_expected_totals.get(packet_id)
@@ -268,6 +292,10 @@ class ReadingAssembly:
             total += 1
         if self.end_payload is not None:
             total += 1
+        if self.battery_payload is not None:
+            total += 1
+        if self.sample_reason_payload is not None:
+            total += 1
 
         for sensor_id, total_packets in self.sensor_expected_totals.items():
             if sensor_id in self.sensor_parts:
@@ -284,6 +312,8 @@ class ReadingAssembly:
             (BLE_TX_TIMESTAMP,     self.timestamp_packet_no, self.timestamp_payload),
             (BLE_TX_CRC32,         self.crc32_packet_no,   self.crc32_payload),
             (BLE_TX_END_MESSAGE,   self.end_packet_no,     self.end_payload),
+            (BLE_TX_SENSOR_BATTERY_MANAGER, self.battery_packet_no, self.battery_payload),
+            (BLE_TX_SAMPLE_REASON, self.sample_reason_packet_no, self.sample_reason_payload),
         ]:
             if special_pn is not None:
                 out.append(
@@ -340,10 +370,14 @@ def find_matching_assembly(assemblies, device_assemblies, device, pkt, received_
         if packet_id == BLE_TX_START_MESSAGE:
             continue
 
-        # não aceitar start/timestamp/end duplicados
+        # não aceitar start/timestamp/end/battery duplicados
         if packet_id == BLE_TX_TIMESTAMP and asm.timestamp_payload is not None:
             continue
         if packet_id == BLE_TX_END_MESSAGE and asm.end_payload is not None:
+            continue
+        if packet_id == BLE_TX_SENSOR_BATTERY_MANAGER and asm.battery_payload is not None:
+            continue
+        if packet_id == BLE_TX_SAMPLE_REASON and asm.sample_reason_payload is not None:
             continue
 
         # pacote já presente
@@ -354,8 +388,13 @@ def find_matching_assembly(assemblies, device_assemblies, device, pkt, received_
         if packet_id == BLE_TX_START_MESSAGE and asm.start_payload is not None:
             continue
 
-        # timestamp e sensor só entram em assembly que já começou e ainda não fechou
-        if packet_id in SENSOR_PACKET_IDS or packet_id == BLE_TX_TIMESTAMP:
+        # timestamp, sensor, battery e sample_reason só entram em assembly que já começou e ainda não fechou
+        if (
+            packet_id in SENSOR_PACKET_IDS
+            or packet_id == BLE_TX_TIMESTAMP
+            or packet_id == BLE_TX_SENSOR_BATTERY_MANAGER
+            or packet_id == BLE_TX_SAMPLE_REASON
+        ):
             if asm.start_payload is None or asm.end_payload is not None:
                 continue
 
@@ -450,8 +489,61 @@ def build_success_event(assembly, accel_sampling_time_ms=200, rssi=None):
         payload = b"".join(assembly.sensor_parts[BLE_TX_SENSOR_IMP23ABSU][pn] for pn in pns)
         event["mic"] = decode_sensor_payload(BLE_TX_SENSOR_IMP23ABSU, payload)
 
+    # battery_manager (firmware v7): opcional, só quando houve ciclo de bateria
+    if assembly.battery_payload is not None:
+        try:
+            event["batteryManager"] = decode_battery_manager_payload(assembly.battery_payload)
+        except ValueError as exc:
+            jlog(
+                SERVICE,
+                "WARN",
+                "battery_manager_decode_failed",
+                "Falha ao decodificar pacote de bateria: %s" % exc,
+            )
+
+    # sample_reason (firmware v8): opcional — motivo da amostra (periódica/solicitação/interrupção)
+    if assembly.sample_reason_payload is not None:
+        try:
+            event["sampleReason"] = decode_sample_reason_payload(
+                assembly.sample_reason_payload
+            )["reason"]
+        except ValueError as exc:
+            jlog(
+                SERVICE,
+                "WARN",
+                "sample_reason_decode_failed",
+                "Falha ao decodificar pacote de motivo da amostra: %s" % exc,
+            )
+
     return event
 
+
+
+def reading_dedup_key(evt):
+    """
+    Chave de idempotência de UMA leitura física, montada apenas com dados vindos
+    do firmware:
+
+      crc32           — fingerprint do conteúdo do frame (pacote BLE_TX_CRC32);
+                        um frame ARMAZENADO re-coletado reaparece com o mesmo crc32.
+      timestamp.rawHex — bytes crus do instante da amostra (pacote BLE_TX_TIMESTAMP);
+                        uma leitura NOVA sempre tem timestamp diferente.
+
+    Um frame re-transmitido pelo firmware (loop de "leituras pendentes que não
+    decrementam") reaparece com AMBOS idênticos. Uma leitura genuinamente nova
+    difere em pelo menos um: máquina rodando → crc32 muda; máquina parada →
+    timestamp muda. Só há colisão se crc32 E timestamp forem idênticos, que é
+    exatamente o mesmo frame físico — o caso que queremos suprimir.
+
+    Retorna None quando não há crc32 (nunca deduplicar sem chave forte — jamais
+    arriscar descartar uma leitura legítima).
+    """
+    crc32 = evt.get("crc32")
+    if not crc32:
+        return None
+    ts = evt.get("timestamp") or {}
+    ts_raw = ts.get("rawHex") or ""
+    return "%s:%s" % (crc32, ts_raw)
 
 
 def try_put_outbound(outbound_queue, event, stats):
@@ -483,10 +575,19 @@ def assembler_loop(
     tx_done_queue=None,
     accel_sampling_time_ms=200,
     rssi_cache=None,
+    dedup_enabled=True,
+    dedup_window_seconds=600,
 ):
     assemblies = {}
     device_assemblies = {}  # device -> set[key], for O(1) lookup
     last_housekeeping = time.monotonic()
+
+    # Dedup de reenvio: (device, reading_key) -> time.monotonic() do último forward.
+    # Suprime frames armazenados re-coletados (mesmo crc32+timestamp) dentro da
+    # janela, sem NUNCA descartar uma leitura nova (chave difere). Só em memória:
+    # um restart do processo zera o cache — a dedup durável de longo prazo é
+    # responsabilidade do backend. Podado por idade no housekeeping.
+    _dedup_seen = {}
 
     # Acumuladores locais: flush para stats uma vez por ciclo de housekeeping
     # (evita aquisição de lock por pacote individual)
@@ -497,6 +598,7 @@ def assembler_loop(
         "assemblies_timed_out": 0,
         "assemblies_evicted": 0,
         "duplicate_packets": 0,
+        "duplicate_readings_suppressed": 0,
         "completed_samples": 0,
         "completed_payload_bytes": 0,
     }
@@ -632,7 +734,33 @@ def assembler_loop(
                     if age_ms > _max_age_ms:
                         _max_age_ms = age_ms
 
-                    try_put_outbound(outbound_queue, evt, stats)
+                    # Dedup de reenvio: descarta APENAS o frame físico idêntico
+                    # (mesmo crc32+timestamp) re-coletado dentro da janela. O
+                    # tx_done já foi sinalizado acima, então o disconnect/ciclo
+                    # BLE ocorre igual — só não reencaminhamos a duplicata.
+                    dedup_key = reading_dedup_key(evt) if dedup_enabled else None
+                    if dedup_key is not None:
+                        seen_key = (device, dedup_key)
+                        mono = time.monotonic()
+                        last_seen = _dedup_seen.get(seen_key)
+                        _dedup_seen[seen_key] = mono
+                        if last_seen is not None and (mono - last_seen) < dedup_window_seconds:
+                            _acc["duplicate_readings_suppressed"] += 1
+                            jlog(
+                                SERVICE,
+                                "WARN",
+                                "duplicate_reading_suppressed",
+                                "Frame idêntico re-coletado (mesmo crc32+timestamp); não reencaminhado",
+                                device=device,
+                                ap=ap,
+                                crc32=evt.get("crc32"),
+                                timestamp_raw=(evt.get("timestamp") or {}).get("rawHex"),
+                                seconds_since_last=round(mono - last_seen, 1),
+                            )
+                        else:
+                            try_put_outbound(outbound_queue, evt, stats)
+                    else:
+                        try_put_outbound(outbound_queue, evt, stats)
 
                 except Exception as e:
                     _acc["assemblies_invalid"] += 1
@@ -676,6 +804,13 @@ def assembler_loop(
                     has_timestamp=asm.timestamp_payload is not None,
                     has_end=asm.end_payload is not None,
                 )
+
+            # poda o cache de dedup: remove chaves além da janela (bounda memória)
+            if _dedup_seen:
+                mono = time.monotonic()
+                stale = [k for k, t in _dedup_seen.items() if (mono - t) >= dedup_window_seconds]
+                for k in stale:
+                    del _dedup_seen[k]
 
             # flush acumuladores para stats com uma única aquisição de lock
             stats.inc_many(_acc)
