@@ -25,6 +25,9 @@
   "assembly_timeout_seconds": 3,
   "max_open_assemblies": 200,
   "accel_sampling_time_ms": 200,
+
+  "dedup_enabled": 1,
+  "dedup_window_seconds": 600,
   "connection_retry_margin_seconds": 30,
   "disconnect_delay_seconds": 2.0,
   "max_connections_per_chip": 20,

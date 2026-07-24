@@ -519,6 +519,33 @@ def build_success_event(assembly, accel_sampling_time_ms=200, rssi=None):
 
 
 
+def reading_dedup_key(evt):
+    """
+    Chave de idempotência de UMA leitura física, montada apenas com dados vindos
+    do firmware:
+
+      crc32           — fingerprint do conteúdo do frame (pacote BLE_TX_CRC32);
+                        um frame ARMAZENADO re-coletado reaparece com o mesmo crc32.
+      timestamp.rawHex — bytes crus do instante da amostra (pacote BLE_TX_TIMESTAMP);
+                        uma leitura NOVA sempre tem timestamp diferente.
+
+    Um frame re-transmitido pelo firmware (loop de "leituras pendentes que não
+    decrementam") reaparece com AMBOS idênticos. Uma leitura genuinamente nova
+    difere em pelo menos um: máquina rodando → crc32 muda; máquina parada →
+    timestamp muda. Só há colisão se crc32 E timestamp forem idênticos, que é
+    exatamente o mesmo frame físico — o caso que queremos suprimir.
+
+    Retorna None quando não há crc32 (nunca deduplicar sem chave forte — jamais
+    arriscar descartar uma leitura legítima).
+    """
+    crc32 = evt.get("crc32")
+    if not crc32:
+        return None
+    ts = evt.get("timestamp") or {}
+    ts_raw = ts.get("rawHex") or ""
+    return "%s:%s" % (crc32, ts_raw)
+
+
 def try_put_outbound(outbound_queue, event, stats):
     try:
         outbound_queue.put_nowait(event)
@@ -548,10 +575,19 @@ def assembler_loop(
     tx_done_queue=None,
     accel_sampling_time_ms=200,
     rssi_cache=None,
+    dedup_enabled=True,
+    dedup_window_seconds=600,
 ):
     assemblies = {}
     device_assemblies = {}  # device -> set[key], for O(1) lookup
     last_housekeeping = time.monotonic()
+
+    # Dedup de reenvio: (device, reading_key) -> time.monotonic() do último forward.
+    # Suprime frames armazenados re-coletados (mesmo crc32+timestamp) dentro da
+    # janela, sem NUNCA descartar uma leitura nova (chave difere). Só em memória:
+    # um restart do processo zera o cache — a dedup durável de longo prazo é
+    # responsabilidade do backend. Podado por idade no housekeeping.
+    _dedup_seen = {}
 
     # Acumuladores locais: flush para stats uma vez por ciclo de housekeeping
     # (evita aquisição de lock por pacote individual)
@@ -562,6 +598,7 @@ def assembler_loop(
         "assemblies_timed_out": 0,
         "assemblies_evicted": 0,
         "duplicate_packets": 0,
+        "duplicate_readings_suppressed": 0,
         "completed_samples": 0,
         "completed_payload_bytes": 0,
     }
@@ -697,7 +734,33 @@ def assembler_loop(
                     if age_ms > _max_age_ms:
                         _max_age_ms = age_ms
 
-                    try_put_outbound(outbound_queue, evt, stats)
+                    # Dedup de reenvio: descarta APENAS o frame físico idêntico
+                    # (mesmo crc32+timestamp) re-coletado dentro da janela. O
+                    # tx_done já foi sinalizado acima, então o disconnect/ciclo
+                    # BLE ocorre igual — só não reencaminhamos a duplicata.
+                    dedup_key = reading_dedup_key(evt) if dedup_enabled else None
+                    if dedup_key is not None:
+                        seen_key = (device, dedup_key)
+                        mono = time.monotonic()
+                        last_seen = _dedup_seen.get(seen_key)
+                        _dedup_seen[seen_key] = mono
+                        if last_seen is not None and (mono - last_seen) < dedup_window_seconds:
+                            _acc["duplicate_readings_suppressed"] += 1
+                            jlog(
+                                SERVICE,
+                                "WARN",
+                                "duplicate_reading_suppressed",
+                                "Frame idêntico re-coletado (mesmo crc32+timestamp); não reencaminhado",
+                                device=device,
+                                ap=ap,
+                                crc32=evt.get("crc32"),
+                                timestamp_raw=(evt.get("timestamp") or {}).get("rawHex"),
+                                seconds_since_last=round(mono - last_seen, 1),
+                            )
+                        else:
+                            try_put_outbound(outbound_queue, evt, stats)
+                    else:
+                        try_put_outbound(outbound_queue, evt, stats)
 
                 except Exception as e:
                     _acc["assemblies_invalid"] += 1
@@ -741,6 +804,13 @@ def assembler_loop(
                     has_timestamp=asm.timestamp_payload is not None,
                     has_end=asm.end_payload is not None,
                 )
+
+            # poda o cache de dedup: remove chaves além da janela (bounda memória)
+            if _dedup_seen:
+                mono = time.monotonic()
+                stale = [k for k, t in _dedup_seen.items() if (mono - t) >= dedup_window_seconds]
+                for k in stale:
+                    del _dedup_seen[k]
 
             # flush acumuladores para stats com uma única aquisição de lock
             stats.inc_many(_acc)
