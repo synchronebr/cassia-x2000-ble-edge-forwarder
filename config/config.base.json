@@ -14,7 +14,7 @@
   "flush_interval_seconds": 1,
   "metrics_interval_seconds": 5,
 
-  "spool_max_mb": 20,
+  "spool_max_mb": 200,
   "spool_write_batch_size": 100,
   "spool_write_batch_wait_ms": 200,
 
